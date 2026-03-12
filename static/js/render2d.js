@@ -1,7 +1,9 @@
 function render2D() {
   const canvas = document.getElementById('canvas-2d');
   const ctx = canvas.getContext('2d');
-  const W = canvas.width, H = canvas.height;
+  const dpr = window.devicePixelRatio || 1;
+  const W = canvas.width / dpr, H = canvas.height / dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, W, H);
   const { ox, oy } = getO();
 

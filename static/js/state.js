@@ -29,23 +29,25 @@ const state = {
 
 function getO() {
   const c = document.getElementById('canvas-2d');
+  const dpr = window.devicePixelRatio || 1;
+  const W = c.width / dpr, H = c.height / dpr;
   const ppm = state.ppm * state.zoom;
   if (state.roomMode === 'rect') {
     return {
-      ox: (c.width  - state.roomW * ppm) / 2 + state.panX,
-      oy: (c.height - state.roomD * ppm) / 2 + state.panY,
+      ox: (W - state.roomW * ppm) / 2 + state.panX,
+      oy: (H - state.roomD * ppm) / 2 + state.panY,
     };
   }
   // Wall-builder / free mode
   if (!state.polyDone || state.poly.length === 0) {
-    return { ox: state.polyOriginX || c.width/2, oy: state.polyOriginY || c.height/2 };
+    return { ox: state.polyOriginX || W/2, oy: state.polyOriginY || H/2 };
   }
   const xs = state.poly.map(p => p.x), ys = state.poly.map(p => p.y);
   const minX = Math.min(...xs), minY = Math.min(...ys);
   const spanX = Math.max(...xs) - minX, spanY = Math.max(...ys) - minY;
   return {
-    ox: (c.width  - spanX * ppm) / 2 - minX * ppm + state.panX,
-    oy: (c.height - spanY * ppm) / 2 - minY * ppm + state.panY,
+    ox: (W - spanX * ppm) / 2 - minX * ppm + state.panX,
+    oy: (H - spanY * ppm) / 2 - minY * ppm + state.panY,
   };
 }
 

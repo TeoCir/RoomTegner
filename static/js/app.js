@@ -24,10 +24,12 @@ window.addEventListener('load', () => {
 });
 
 function resizeAll() {
+  const dpr = window.devicePixelRatio || 1;
   const wrap = document.getElementById('cw');
   const W = wrap.clientWidth, H = wrap.clientHeight;
   const c = document.getElementById('canvas-2d');
-  c.width = W; c.height = H;
+  c.width = Math.round(W * dpr); c.height = Math.round(H * dpr);
+  c.style.width = W + 'px'; c.style.height = H + 'px';
   calcPPM();
   if (state.view === '3d') scene3d.resize();
 }

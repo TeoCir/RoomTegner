@@ -17,6 +17,14 @@ window.addEventListener('load', () => {
       state.customer   = data.customer   || '';
       state.sketchId   = data.sketchId   || null;
       document.getElementById('sketchLabel').textContent = state.sketchName;
+      const banner = document.getElementById('autosave-banner');
+      const lbl = document.getElementById('autosave-banner-text');
+      if (banner) {
+        const rooms = state.rooms.length;
+        lbl.textContent = `Gjenopprettet "${state.sketchName}" (${rooms} rom)`;
+        banner.style.display = 'flex';
+        setTimeout(() => { banner.style.display = 'none'; }, 8000);
+      }
     }
   } catch(e) {}
   renderRoomTabs();
@@ -282,6 +290,11 @@ function setTool(t) {
   document.querySelectorAll('.ct').forEach(b => b.classList.remove('act'));
   const el = document.getElementById('t' + t);
   if (el) el.classList.add('act');
+}
+
+function discardAutosave() {
+  document.getElementById('autosave-banner').style.display = 'none';
+  newSketch();
 }
 
 function newSketch() {

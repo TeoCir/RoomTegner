@@ -24,7 +24,7 @@ header { display: flex; align-items: center; gap: 10px; padding: 0 16px; height:
 .hr { display: flex; align-items: center; gap: 7px; margin-left: auto; }
 
 /* Buttons */
-.btn { padding: 5px 13px; border-radius: 6px; border: none; cursor: pointer; font-family: inherit; font-weight: 600; font-size: 12px; transition: all .15s; }
+.btn { padding: 5px 13px; border-radius: 6px; border: none; cursor: pointer; font-family: inherit; font-weight: 600; font-size: 12px; transition: all .15s; display: inline-flex; align-items: center; gap: 5px; }
 .btn-ng { background: var(--ng); color: #fff; } .btn-ng:hover { background: #d4471a; }
 .btn-gh { background: transparent; color: var(--muted); border: 1px solid var(--border); } .btn-gh:hover { background: var(--hover); color: var(--text); }
 .btn-warn { background: transparent; color: #b07000; border: 1px solid #e0b040; } .btn-warn:hover { background: #fff8e6; }
@@ -75,7 +75,7 @@ header { display: flex; align-items: center; gap: 10px; padding: 0 16px; height:
 .we-list { display: flex; flex-direction: column; gap: 2px; padding: 6px; }
 .we { display: flex; align-items: center; gap: 8px; padding: 7px 8px; border-radius: 7px; cursor: pointer; border: 1px solid transparent; transition: all .12s; }
 .we:hover { background: var(--hover); border-color: var(--border); }
-.we-icon { width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; font-size: 20px; flex-shrink: 0; }
+.we-icon { width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; font-size: 20px; flex-shrink: 0; color: var(--muted); }
 .we-info { flex: 1; }
 .we-name { font-size: 12px; font-weight: 600; }
 .we-desc { font-size: 10px; color: var(--muted); }
@@ -117,7 +117,7 @@ header { display: flex; align-items: center; gap: 10px; padding: 0 16px; height:
 
 /* Canvas toolbar */
 .ctb { position: absolute; top: 11px; left: 50%; transform: translateX(-50%); display: flex; gap: 4px; background: var(--white); border: 1px solid var(--border); border-radius: 8px; padding: 4px 6px; box-shadow: var(--sh2); z-index: 5; }
-.ct { padding: 4px 9px; border-radius: 5px; border: none; background: transparent; color: var(--muted); font-family: inherit; font-size: 11px; font-weight: 600; cursor: pointer; transition: all .12s; white-space: nowrap; }
+.ct { padding: 4px 9px; border-radius: 5px; border: none; background: transparent; color: var(--muted); font-family: inherit; font-size: 11px; font-weight: 600; cursor: pointer; transition: all .12s; white-space: nowrap; display: inline-flex; align-items: center; gap: 4px; }
 .ct:hover { background: var(--hover); color: var(--text); }
 .ct.act { background: var(--ng); color: #fff; }
 .ct-sep { width: 1px; background: var(--border); margin: 2px 2px; }
@@ -167,3 +167,6 @@ header { display: flex; align-items: center; gap: 10px; padding: 0 16px; height:
 .skilt-item-desc { font-size:10px; color:var(--muted); margin-top:1px; }
 .skilt-add { width:26px; height:26px; border-radius:50%; background:var(--ng); color:#fff; border:none; font-size:16px; cursor:pointer; display:flex; align-items:center; justify-content:center; flex-shrink:0; }
 .skilt-add:hover { background:#d4471a; }
+
+/* Autosave banner */
+.autosave-banner { position:fixed; bottom:16px; left:50%; transform:translateX(-50%); display:flex; align-items:center; gap:10px; background:#1c1a18; color:#f0ede8; padding:9px 14px; border-radius:10px; font-size:12px; box-shadow:0 4px 20px rgba(0,0,0,0.25); z-index:200; white-space:nowrap; }

@@ -42,10 +42,32 @@ function resizeAll() {
   if (state.view === '3d') scene3d.resize();
 }
 
+// Use render2D() directly during drag/pan/rotate — those paths run on every
+// mousemove and must stay cheap. scene3d.rebuild() marks the 3D scene dirty,
+// which causes _doRebuild() to tear down and recreate ALL Three.js meshes on
+// the next requestAnimationFrame. Calling it during drag would rebuild every
+// frame while the user is moving an object. The 3D scene is synced on mouseup
+// instead (see mouseup listener). Call render() (this function) for all other
+// state changes: button clicks, item placement, view switches, etc.
 function render() {
   render2D();
-  if (scene3d._initialized) scene3d.rebuild(); // always keep 3D in sync
+  if (scene3d._initialized) scene3d.rebuild();
   scheduleAutosave();
+}
+
+// Throttle 2D repaints during high-frequency events (drag, pan, rotate).
+// Instead of painting synchronously on every mousemove, schedule a single
+// paint on the next animation frame — capped at 60fps regardless of mouse rate.
+// Other code paths (mouseup, button clicks) call render2D() directly since they
+// are not high-frequency and must paint immediately.
+let _render2dScheduled = false;
+function scheduleRender2D() {
+  if (_render2dScheduled) return;
+  _render2dScheduled = true;
+  requestAnimationFrame(() => {
+    _render2dScheduled = false;
+    render2D();
+  });
 }
 
 // ── Sidebar tabs ─────────────────────────────────────────────────────────
@@ -106,8 +128,8 @@ function placePendingSkiltOnContainer(container) {
   state.items = state.items.filter(s => !(s.kind === 'skilt' && s._linkedTo === container.id));
   state.items.push({
     id: state.nextId++, typeId: ps.id, kind: 'skilt',
-    def: ps.def, x: container.x, y: container.y, rot: 0, size: 0.6,
-    wallH: binH + 0.25, wallOffset: 0,
+    def: ps.def, x: container.x, y: container.y, rot: 0, size: 0.65,
+    wallH: binH + 0.35, wallOffset: 0,
     _linkedTo: container.id,
     _wallNx: w ? w.nx : 0, _wallNy: w ? w.ny : -1,
     _wallX:  w ? w.wallX : container.x, _wallY: w ? w.wallY : container.y,
@@ -241,8 +263,15 @@ function showCancelBtn(show) {
 // ── Items ──────────────────────────────────────────────────────────────────
 function addContainer(defId) {
   const def = DEFS.find(x => x.id === defId); if (!def) return;
-  const cx = state.roomMode === 'rect' ? state.roomW / 2 : centroid('x');
-  const cy = state.roomMode === 'rect' ? state.roomD / 2 : centroid('y');
+  const idx = state.items.filter(i => i.kind === 'container').length;
+  const baseCx = state.roomMode === 'rect' ? state.roomW / 2 : centroid('x');
+  const baseCy = state.roomMode === 'rect' ? state.roomD / 2 : centroid('y');
+  // Spread containers in a 5-wide grid so they never stack on the centroid.
+  // Prevents hitTest from picking the wrong container when multiple are unplaced.
+  const col = idx % 5;
+  const row = Math.floor(idx / 5);
+  const cx = baseCx + (col - 2) * 0.65;
+  const cy = baseCy + row * 0.65;
   const it = { id: state.nextId++, kind: 'container', typeId: defId, def, x: cx, y: cy, rot: 0, fraksjon: 'rest' };
   state.items.push(it); state.sel = it.id;
   updateDP(); render();
@@ -282,7 +311,11 @@ function delSel() {
 
 function rot90() {
   const it = state.items.find(i => i.id === state.sel);
-  if (it) { it.rot = ((it.rot || 0) + Math.PI / 2) % (Math.PI * 2); updateDP(); render(); }
+  if (it) {
+    it.rot = ((it.rot || 0) + Math.PI / 2) % (Math.PI * 2);
+    if (it.kind === 'container') updateLinkedSkiltWall(it); "funksjon så skilt følger riktig vegg ved 90* roter"
+    updateDP(); render();
+  }
 }
 
 function setTool(t) {
@@ -370,6 +403,7 @@ function setupEvents() {
   c.addEventListener('mousemove', onMM);
   document.addEventListener('mouseup', () => {
     const dragged = state.drag;
+    const rotated = state.rotat; // save before clearing
     state.drag = null; state.rotat = null; state.panning = false;
     // Restore correct cursor
     if (state.spaceDown) {
@@ -383,14 +417,24 @@ function setupEvents() {
       if (w && w.dist < 0.8) {
         dragged.rot = Math.atan2(w.nx, -w.ny);
       }
-      // Move any linked skilt with the container
+      // Move any linked skilt with the container and sync wall info.
+      // Wall info is updated here unconditionally (not only in checkAutoSkilt)
+      // so that stale _wallNx/Ny from a previous position never survives a drag.
       state.items.forEach(s => {
         if (s.kind === 'skilt' && s._linkedTo === dragged.id) {
           s.x = dragged.x; s.y = dragged.y;
+          if (w) {
+            s._wallNx = w.nx; s._wallNy = w.ny;
+            s._wallX  = w.wallX; s._wallY  = w.wallY;
+          }
         }
       });
       checkAutoSkilt(dragged);
       updateDP(); render();
+    }
+    if (rotated && rotated.kind === 'container') {
+      updateLinkedSkiltWall(rotated);
+      render();
     }
   });
   c.addEventListener('dblclick', onDbl);
@@ -531,7 +575,8 @@ function onMM(e) {
   if (state.panning) {
     state.panX = state.panOX + (mx - state.panSX);
     state.panY = state.panOY + (my - state.panSY);
-    render(); return;
+    // 2D only during pan — 3D rebuilds on mouseup (see mouseup listener)
+    scheduleRender2D(); return;
   }
   if (state.drag) {
     const { ox, oy } = getO();
@@ -575,13 +620,14 @@ function onMM(e) {
       const snapped = snapToWall(state.drag.x, state.drag.y, hw, hd);
       state.drag.x = snapped.x; state.drag.y = snapped.y;
     }
-    updateDP(); render();
+    scheduleRender2D(); // 2D only during drag — 3D rebuilds on mouseup; updateDP() runs on mouseup
   }
   if (state.rotat) {
     const { ox, oy } = getO();
     const ppm = getPPM();
     const a = Math.atan2(my - oy - state.rotat.y * ppm, mx - ox - state.rotat.x * ppm);
-    state.rotat.rot = state.rsi + (a - state.rsa); updateDP(); render();
+    state.rotat.rot = state.rsi + (a - state.rsa);
+    scheduleRender2D(); // 2D only during rotate — 3D rebuilds on mouseup; updateDP() runs on mouseup
   }
   // Pending skilt: highlight hovered container
   if (state.pendingSkilt) {
@@ -697,7 +743,7 @@ function updateSkilt3dCtrl() {
   ctrl.style.display = show ? 'flex' : 'none';
   if (show) {
     const lbl = document.getElementById('skilt3d-h-lbl');
-    if (lbl) lbl.textContent = ((it.wallH !== undefined ? it.wallH : 1.5)).toFixed(2) + 'm';
+    if (lbl) lbl.textContent = ((it.wallH !== undefined ? it.wallH : 1.6)).toFixed(2) + 'm';
   }
 }
 
@@ -766,9 +812,17 @@ function nearestWall(x, y) {
   }
   // Free mode — find closest poly segment
   const pts = state.poly;
-  if (!pts || pts.length < 2) return null;
-  const cx0 = pts.reduce((s, p) => s + p.x, 0) / pts.length;
-  const cy0 = pts.reduce((s, p) => s + p.y, 0) / pts.length;
+  if (!pts || pts.length < 3) return null;
+  // Use winding order to determine inward normals — avoids centroid-based flipping
+  // which fails for concave rooms (L/U/T-shapes) where the centroid can fall outside
+  // the polygon. For a CW polygon on a Y-down canvas (shoelace > 0), the default
+  // left-perpendicular (-ey, ex) already points INWARD, so sign = +1. For CCW
+  // (shoelace < 0) it points outward, so we flip with sign = -1.
+  const shoelace = pts.reduce((sum, p, i) => {
+    const q = pts[(i + 1) % pts.length];
+    return sum + p.x * q.y - q.x * p.y;
+  }, 0);
+  const sign = shoelace > 0 ? 1 : -1;
   let best = null;
   for (let i = 0; i < pts.length; i++) {
     const a = pts[i], b = pts[(i + 1) % pts.length];
@@ -779,13 +833,134 @@ function nearestWall(x, y) {
     const wx = a.x + t*ex, wy = a.y + t*ey;
     const dist = Math.hypot(x - wx, y - wy);
     const len = Math.sqrt(len2);
-    // Two candidate normals
-    let nx = -ey / len, ny = ex / len;
-    // Flip so normal points toward centroid (inward)
-    if ((cx0 - wx)*nx + (cy0 - wy)*ny < 0) { nx = -nx; ny = -ny; }
+    const nx = sign * (-ey / len), ny = sign * (ex / len);
     if (!best || dist < best.dist) best = { dist, wallX: wx, wallY: wy, nx, ny };
   }
   return best;
+}
+
+// Scores all candidate walls against a desired direction and returns the best match.
+// Each wall is scored by alignment × proximity so that a well-aligned but slightly
+// farther wall beats a poorly-aligned but nearer wall — critical in corners where
+// two walls are equidistant and only rotation distinguishes which one to use.
+function bestWallByDirection(candidates, dirNx, dirNy, maxDist) {
+  let best = null, bestScore = -Infinity;
+  for (const c of candidates) {
+    if (c.dist > maxDist) continue;
+    const dot = c.nx * dirNx + c.ny * dirNy;
+    if (dot <= 0) continue; // wall is in front of or beside container — skip
+    const score = dot * (1 - c.dist / maxDist);
+    if (score > bestScore) { bestScore = score; best = c; }
+  }
+  return best;
+}
+
+// Finds the wall that best matches the given direction (dirNx, dirNy) within maxDist.
+// Uses bestWallByDirection() on all polygon edges or rect sides depending on roomMode.
+// Unlike nearestWall(), this picks by directional alignment, not pure proximity.
+function findWallByDirection(x, y, dirNx, dirNy, maxDist) {
+  if (state.roomMode === 'rect') {
+    const W = state.roomW, D = state.roomD;
+    const candidates = [
+      { dist: y,     wallX: x, wallY: 0, nx: 0,  ny: 1  },
+      { dist: D - y, wallX: x, wallY: D, nx: 0,  ny: -1 },
+      { dist: x,     wallX: 0, wallY: y, nx: 1,  ny: 0  },
+      { dist: W - x, wallX: W, wallY: y, nx: -1, ny: 0  },
+    ];
+    return bestWallByDirection(candidates, dirNx, dirNy, maxDist);
+  }
+  const pts = state.poly;
+  if (!pts || pts.length < 3) return null;
+  const shoelace = pts.reduce((sum, p, i) => {
+    const q = pts[(i + 1) % pts.length];
+    return sum + p.x * q.y - q.x * p.y;
+  }, 0);
+  const sign = shoelace > 0 ? 1 : -1;
+  const candidates = [];
+  for (let i = 0; i < pts.length; i++) {
+    const a = pts[i], b = pts[(i + 1) % pts.length];
+    const ex = b.x - a.x, ey = b.y - a.y, len2 = ex*ex + ey*ey;
+    if (len2 < 1e-9) continue;
+    const t = Math.max(0, Math.min(1, ((x - a.x)*ex + (y - a.y)*ey) / len2));
+    const wallX = a.x + t*ex, wallY = a.y + t*ey;
+    const dist = Math.hypot(x - wallX, y - wallY);
+    const len = Math.sqrt(len2);
+    candidates.push({ dist, wallX, wallY, nx: sign * (-ey / len), ny: sign * (ex / len) });
+  }
+  return bestWallByDirection(candidates, dirNx, dirNy, maxDist);
+}
+
+// Returns all walls within maxDist of (x, y) with their distance and inward normals.
+// Used by updateLinkedSkiltWall() to detect corner situations (2+ walls nearby).
+function allNearbyWalls(x, y, maxDist) {
+  const results = [];
+  if (state.roomMode === 'rect') {
+    const W = state.roomW, D = state.roomD;
+    const sides = [
+      { dist: y,     wallX: x, wallY: 0, nx: 0,  ny: 1  },
+      { dist: D - y, wallX: x, wallY: D, nx: 0,  ny: -1 },
+      { dist: x,     wallX: 0, wallY: y, nx: 1,  ny: 0  },
+      { dist: W - x, wallX: W, wallY: y, nx: -1, ny: 0  },
+    ];
+    for (const s of sides) { if (s.dist <= maxDist) results.push(s); }
+    return results;
+  }
+  const pts = state.poly;
+  if (!pts || pts.length < 3) return results;
+  const shoelace = pts.reduce((sum, p, i) => {
+    const q = pts[(i + 1) % pts.length];
+    return sum + p.x * q.y - q.x * p.y;
+  }, 0);
+  const sign = shoelace > 0 ? 1 : -1;
+  for (let i = 0; i < pts.length; i++) {
+    const a = pts[i], b = pts[(i + 1) % pts.length];
+    const ex = b.x - a.x, ey = b.y - a.y, len2 = ex*ex + ey*ey;
+    if (len2 < 1e-9) continue;
+    const t = Math.max(0, Math.min(1, ((x - a.x)*ex + (y - a.y)*ey) / len2));
+    const wallX = a.x + t*ex, wallY = a.y + t*ey;
+    const dist = Math.hypot(x - wallX, y - wallY);
+    if (dist > maxDist) continue;
+    const len = Math.sqrt(len2);
+    results.push({ dist, wallX, wallY, nx: sign * (-ey / len), ny: sign * (ex / len) });
+  }
+  return results;
+}
+
+// Updates the linked sign's wall info based on corner detection and rotation.
+// Logic:
+//   - If only ONE wall is within CORNER_DIST → container is along a single wall.
+//     Sign stays on that wall regardless of container rotation.
+//   - If TWO or more walls are within CORNER_DIST → container is in a corner.
+//     Use the back direction (derived from rotation) to pick the correct wall.
+// This prevents the sign from "flying off" to a far wall when a non-corner
+// container is rotated so its back faces the room interior.
+const CORNER_DIST = 1.2; // metres — threshold for "is in a corner"
+function updateLinkedSkiltWall(container) {
+  const skilt = state.items.find(s => s.kind === 'skilt' && s._linkedTo === container.id);
+  if (!skilt) return;
+
+  const nearby = allNearbyWalls(container.x, container.y, CORNER_DIST);
+  if (nearby.length === 0) return; // container not near any wall — leave sign unchanged
+
+  let w;
+  if (nearby.length >= 2) {
+    // Corner: pick the wall the back of the container faces
+    const rot = container.rot || 0;
+    const backNx =  Math.sin(rot);
+    const backNy = -Math.cos(rot);
+    w = bestWallByDirection(nearby, backNx, backNy, CORNER_DIST);
+    if (!w) w = nearby.reduce((a, b) => a.dist < b.dist ? a : b); // fallback to nearest
+  } else {
+    // Single wall nearby — always use it, ignore rotation
+    w = nearby[0];
+  }
+
+  skilt._wallNx = w.nx;
+  skilt._wallNy = w.ny;
+  skilt._wallX  = w.wallX;
+  skilt._wallY  = w.wallY;
+  skilt.x = container.x;
+  skilt.y = container.y;
 }
 
 function isNearAnyWall(it) {
@@ -826,8 +1001,8 @@ function checkAutoSkilt(it) {
   const binH = it.def.H / 1000;
   state.items.push({
     id: state.nextId++, typeId: skiltId, kind: 'skilt',
-    def, x: it.x, y: it.y, rot: 0, size: 0.4,
-    wallH: binH + 0.3, wallOffset: 0,
+    def, x: it.x, y: it.y, rot: 0, size: 0.45,
+    wallH: binH + 0.4, wallOffset: 0,
     _linkedTo: it.id,
     _wallNx: w.nx, _wallNy: w.ny,
     _wallX: w.wallX, _wallY: w.wallY,
@@ -849,8 +1024,12 @@ function setFraksjon(id, fraksjon) {
       metall: 'sk-metall', eps: 'sk-eps', farlig: 'sk-farlig', ee: 'sk-ee',
     };
     const skiltId = fraksjonToSkilt[fraksjon];
+    // Use _linkedTo (not proximity) so we always update the correct skilt when
+    // multiple containers with the same fraksjon are placed close together.
+    // Proximity-based find() returns the first skilt within range regardless of
+    // which container owns it — this broke sign updates beyond ~3 equal fraksjoner.
     const existing = state.items.find(s =>
-      s.kind === 'skilt' && Math.abs(s.x - it.x) < 0.6 && Math.abs(s.y - it.y) < 0.6
+      s.kind === 'skilt' && s._linkedTo === it.id
     );
     if (existing && skiltId) {
       const def = SKILT_DEFS.find(s => s.id === skiltId);
@@ -1125,8 +1304,10 @@ async function generatePDF() {
   const { jsPDF } = window.jspdf;
   const customer = document.getElementById('pdfCustomer').value || '—';
   const location = document.getElementById('pdfLocation').value || '—';
+  const seller   = document.getElementById('pdfSeller').value || '';
   const date = document.getElementById('pdfDate').value || new Date().toISOString().slice(0, 10);
   const dateNO = date ? date.split('-').reverse().join('.') : new Date().toLocaleDateString('nb-NO');
+  const roomName = state.rooms[state.activeRoom]?.name || '';
 
   const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
   const PW = 297, PH = 210;
@@ -1142,14 +1323,27 @@ async function generatePDF() {
   doc.text('Norsk Gjenvinning', 10, 11);
   doc.setFontSize(8); doc.setFont('helvetica', 'normal');
   doc.text('Romskisse – Avfallsløsning', 62, 11);
-  // Right side of header
+  if (roomName) doc.text(`· ${roomName}`, 103, 11);
+  // Right side of header — customer, location, seller, date
   doc.setFontSize(8);
-  doc.text(`${customer}`, PW - 10, 7, { align: 'right' });
-  doc.text(`${location}  ·  ${dateNO}`, PW - 10, 12, { align: 'right' });
+  doc.text(`${customer}  ·  ${location}`, PW - 10, 7, { align: 'right' });
+  const sellerLine = seller ? `Selger: ${seller}  ·  ${dateNO}` : dateNO;
+  doc.text(sellerLine, PW - 10, 12, { align: 'right' });
 
-  // Canvas snapshot — main area
+  // Canvas snapshot — fit room to canvas first so the export is always clean
+  // regardless of the user's current zoom/pan. UI overlays (stykkliste panel,
+  // scale bar) are suppressed via state._pdfExporting and re-drawn as proper
+  // PDF elements instead of appearing as raw canvas chrome in the image.
   const canvas = document.getElementById('canvas-2d');
+  const savedPpm = state.ppm, savedZoom = state.zoom, savedPanX = state.panX, savedPanY = state.panY;
+  calcPPM();           // fits room to canvas, resets zoom to 1.0
+  state.panX = 0; state.panY = 0;
+  state._pdfExporting = true;
+  render2D();
   const imgData = canvas.toDataURL('image/png');
+  state._pdfExporting = false;
+  state.ppm = savedPpm; state.zoom = savedZoom; state.panX = savedPanX; state.panY = savedPanY;
+  render2D(); // restore user's view
   const tableW = 68;
   const mapX = 8, mapY = 20, mapW = PW - tableW - 18, mapH = PH - 30;
   doc.addImage(imgData, 'PNG', mapX, mapY, mapW, mapH);
@@ -1250,10 +1444,12 @@ async function generatePDF() {
   doc.text('Norsk Gjenvinning', 10, 11);
   doc.setFontSize(8); doc.setFont('helvetica', 'normal');
   doc.text('Stykkliste og avfallsoversikt', 62, 11);
-  doc.text(`${customer}  ·  ${location}  ·  ${dateNO}`, PW - 10, 11, { align: 'right' });
+  if (roomName) doc.text(`· ${roomName}`, 120, 11);
+  doc.text(`${customer}  ·  ${location}`, PW - 10, 7, { align: 'right' });
+  doc.text(sellerLine, PW - 10, 12, { align: 'right' });
 
   // Table header
-  const cols = { nr: 10, type: 22, fraksjon: 68, sap: 128, dim: 168, antall: 220 };
+  const cols = { nr: 10, type: 22, fraksjon: 80, sap: 148, dim: 192, antall: 248 };
   const tY = 24;
   doc.setFillColor(...DARK);
   doc.rect(8, tY, PW - 16, 8, 'F');
@@ -1263,28 +1459,31 @@ async function generatePDF() {
   doc.text('Fraksjon',   cols.fraksjon, tY + 5.5);
   doc.text('SAP-nr',     cols.sap,      tY + 5.5);
   doc.text('B×D×H (mm)', cols.dim,      tY + 5.5);
-  doc.text('Ant.',       cols.antall,   tY + 5.5);
+  doc.text('Ant.',        cols.antall,   tY + 5.5);
 
-  // All containers sorted by type
-  const sorted = [...containers].sort((a, b) => a.def.name.localeCompare(b.def.name));
+  // Group by type + fraksjon with quantity — reuses the same grouped object from page 1.
+  // One row per unique combination rather than one row per individual container,
+  // so 10× 240L Matavfall = 1 row with Ant.=10. Much more readable for a customer offer.
+  const groupedRows = Object.values(grouped).sort((a, b) => a.def.name.localeCompare(b.def.name));
   let r2 = 0;
-  sorted.forEach((it, idx) => {
+  groupedRows.forEach((g, idx) => {
     const ry2 = tY + 10 + r2 * 8;
     if (ry2 > PH - 16) return;
     if (r2 % 2 === 0) { doc.setFillColor(...LIGHT); doc.rect(8, ry2 - 5, PW - 16, 8, 'F'); }
 
-    const fr = getFraksjon(it.fraksjon || 'rest');
+    const fr = getFraksjon(g.fraksjon);
     const [r, gC, b] = hexToRgb(fr.color);
     doc.setFillColor(r, gC, b);
     doc.circle(cols.nr + 2, ry2 - 0.5, 2, 'F');
 
     doc.setTextColor(...DARK); doc.setFont('helvetica', 'normal'); doc.setFontSize(7.5);
-    doc.text(String(idx + 1),                    cols.nr + 6,   ry2);
-    doc.text(it.def.name,                        cols.type,     ry2);
-    doc.text(fr.label,                           cols.fraksjon, ry2);
-    doc.text(it.def.sap || '—',                  cols.sap,      ry2);
-    doc.text(`${it.def.W}×${it.def.D}×${it.def.H}`, cols.dim,  ry2);
-    doc.text('1',                                cols.antall,   ry2);
+    doc.text(String(idx + 1),                           cols.nr + 6,   ry2);
+    doc.text(g.def.name,                                cols.type,     ry2);
+    doc.text(fr.label,                                  cols.fraksjon, ry2);
+    doc.text(g.def.sap || '—',                          cols.sap,      ry2);
+    doc.text(`${g.def.W}×${g.def.D}×${g.def.H}`,       cols.dim,      ry2);
+    doc.setFont('helvetica', 'bold');
+    doc.text(String(g.count),                           cols.antall,   ry2);
     r2++;
   });
 
@@ -1297,7 +1496,7 @@ async function generatePDF() {
     doc.setTextColor(...DARK); doc.setFont('helvetica', 'bold'); doc.setFontSize(8);
     doc.text('Oppsummering', 13, sumY + 7);
     doc.setFont('helvetica', 'normal'); doc.setFontSize(7.5);
-    doc.text(`${containers.length} beholdere totalt  ·  ${Object.keys(grouped).length} ulike typer/fraksjoner`, 13, sumY + 13);
+    doc.text(`${containers.length} beholdere totalt  ·  ${groupedRows.length} ulike typer/fraksjoner`, 13, sumY + 13);
   }
 
   // Footer side 2

@@ -207,6 +207,7 @@ function render2D() {
       else if (it.def.type === 'rollcage') drawCage2D(ctx, bw, bd, isSel, true);
       else if (it.def.type === 'compactor') drawCompactor2D(ctx, bw, bd, isSel, it.def);
       else drawBin2D(ctx, bw, bd, isSel, it.def, it.fraksjon, it.rot);
+
       // Pending skilt hover highlight
       if (state.pendingSkilt && state._skiltHoverId === it.id) {
         ctx.strokeStyle = '#00cc66'; ctx.lineWidth = 3; ctx.setLineDash([5, 3]);
@@ -226,7 +227,11 @@ function render2D() {
     ctx.restore();
   });
 
-  // ── Stykkliste (live) ────────────────────────────────────────────────
+  // ── Stykkliste (live) + Scale bar ────────────────────────────────────
+  // Skipped during PDF export: both are re-rendered as proper PDF elements
+  // by generatePDF(). Showing them in the canvas snapshot would double-render
+  // them and make the PDF look like a screenshot of the UI.
+  if (state._pdfExporting) return;
   const containers = state.items.filter(i => i.kind === 'container');
   if (containers.length > 0) {
     const counts = {};

@@ -22,6 +22,7 @@ const state = {
   shiftDown: false,
   spaceDown: false,
   panning: false, panSX: 0, panSY: 0, panOX: 0, panOY: 0,
+  _pdfExporting: false, // true only during PDF canvas snapshot — suppresses UI overlays
   // Multi-room support
   rooms: [{ id: 'room-1', name: 'Rom 1', data: null }],
   activeRoom: 0,

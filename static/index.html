@@ -199,6 +199,7 @@
     <h3>Eksporter PDF</h3>
     <div class="ig"><label>Kundenavn</label><input type="text" id="pdfCustomer" placeholder="f.eks. Bakehuset AS"></div>
     <div class="ig"><label>Adresse/lokasjon</label><input type="text" id="pdfLocation" placeholder="f.eks. Kjøkken, 2. etg."></div>
+    <div class="ig"><label>Selger</label><input type="text" id="pdfSeller" placeholder="f.eks. Ola Nordmann"></div>
     <div class="ig"><label>Dato</label><input type="date" id="pdfDate"></div>
     <div class="modal-footer">
       <button class="btn btn-gh" onclick="document.getElementById('pdfModal').classList.remove('open')">Avbryt</button>
@@ -229,9 +230,9 @@
 </div>
 
 <script>window.API_KEY = "{{ api_key }}";</script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="/static/js/three.min.js"></script>
 <script src="/static/js/GLTFLoader.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="/static/js/jspdf.umd.min.js"></script>
 <script src="/static/js/data.js"></script>
 <script src="/static/js/state.js"></script>
 <script src="/static/js/render2d.js"></script>

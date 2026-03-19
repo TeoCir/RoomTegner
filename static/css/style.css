@@ -1,4 +1,34 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+/* Inter font — self-hosted to avoid Google Fonts external dependency and CSP issues.
+   Files served from /static/css/fonts/ — no external requests, works offline,
+   and complies with the strict 'style-src self' CSP set in app.py. */
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('fonts/inter-latin-400-normal.woff') format('woff');
+}
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('fonts/inter-latin-500-normal.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url('fonts/inter-latin-600-normal.woff') format('woff');
+}
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('fonts/inter-latin-700-normal.woff') format('woff');
+}
 
 :root {
   --ng: #E8521A;

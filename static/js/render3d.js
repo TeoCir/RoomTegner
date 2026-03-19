@@ -363,6 +363,58 @@ const scene3d = (() => {
       floorMesh.receiveShadow = true;
       addMesh(floorMesh);
 
+      // Floor expansion joints — same 1m tile grid as rect mode, clipped to the
+      // polygon so lines only appear inside the room (handles L-shapes, T-shapes, etc.).
+      // Each grid line is intersected against polygon edges; only interior segments drawn.
+      const xs2d = poly.map(p => p.x), zs2d = poly.map(p => p.y);
+      const minX = Math.min(...xs2d), maxX = Math.max(...xs2d);
+      const minZ = Math.min(...zs2d), maxZ = Math.max(...zs2d);
+
+      // Returns sorted X intercepts of a horizontal line at z=zVal with the polygon.
+      // Each pair of intercepts [x0,x1] delimits an interior segment.
+      function clipHLine(zVal) {
+        const hits = [];
+        for (let i = 0; i < poly.length; i++) {
+          const a = poly[i], b = poly[(i+1) % poly.length];
+          if ((a.y <= zVal && b.y > zVal) || (b.y <= zVal && a.y > zVal)) {
+            const t = (zVal - a.y) / (b.y - a.y);
+            hits.push(a.x + t * (b.x - a.x));
+          }
+        }
+        return hits.sort((a, b) => a - b);
+      }
+      // Returns sorted Z intercepts of a vertical line at x=xVal with the polygon.
+      function clipVLine(xVal) {
+        const hits = [];
+        for (let i = 0; i < poly.length; i++) {
+          const a = poly[i], b = poly[(i+1) % poly.length];
+          if ((a.x <= xVal && b.x > xVal) || (b.x <= xVal && a.x > xVal)) {
+            const t = (xVal - a.x) / (b.x - a.x);
+            hits.push(a.y + t * (b.y - a.y));
+          }
+        }
+        return hits.sort((a, b) => a - b);
+      }
+
+      const gpts = [];
+      // Horizontal lines (constant z)
+      for (let z = Math.ceil(minZ); z <= Math.floor(maxZ); z++) {
+        const hits = clipHLine(z);
+        for (let j = 0; j + 1 < hits.length; j += 2)
+          gpts.push(hits[j], 0.005, z, hits[j+1], 0.005, z);
+      }
+      // Vertical lines (constant x)
+      for (let x = Math.ceil(minX); x <= Math.floor(maxX); x++) {
+        const hits = clipVLine(x);
+        for (let j = 0; j + 1 < hits.length; j += 2)
+          gpts.push(x, 0.005, hits[j], x, 0.005, hits[j+1]);
+      }
+      if (gpts.length) {
+        const gg = new THREE.BufferGeometry();
+        gg.setAttribute('position', new THREE.Float32BufferAttribute(gpts, 3));
+        addMesh(new THREE.LineSegments(gg, new THREE.LineBasicMaterial({ color: 0x4a4845 })));
+      }
+
       // Walls — one per polygon edge, shifted outward by WALL_THICK/2 so inner
       // faces align with the polygon boundary (same coords as the 2D snap system).
       // Outward normal uses the same shoelace winding logic as nearestWall() in app.js.
@@ -396,6 +448,15 @@ const scene3d = (() => {
         const ea = []; ep.forEach(([x,y,z]) => ea.push(x,y,z));
         eg.setAttribute('position', new THREE.Float32BufferAttribute(ea,3));
         addMesh(new THREE.Line(eg, edgeMat));
+      }
+
+      // Corner caps — a WALL_THICK×H×WALL_THICK cube at each vertex fills the gap
+      // (or overlap) between adjacent rotated wall boxes. Works at any angle; no
+      // rotation needed since the cap is square in XZ. Same wallMat as the walls.
+      for (const p of poly) {
+        const cap = new THREE.Mesh(new THREE.BoxGeometry(WALL_THICK, H, WALL_THICK), wallMat.clone());
+        cap.position.set(p.x, H / 2, p.y);
+        addMesh(cap);
       }
 
       // Orbit is initialized in resetOrbit() / setAngle() — not here.
@@ -554,6 +615,16 @@ const scene3d = (() => {
       wi = getSkiltWallInfo(it); // legacy fallback
     }
 
+    // Validate that the normal points INWARD (from wall surface toward the container).
+    // Stored normals from before the winding-order fix pointed outward, which placed
+    // the sign on the outside of the wall. Flipping when dot < 0 self-heals stale data.
+    const deltaX = it.x - wi.wx;
+    const deltaZ = it.y - wi.wz;
+    if (wi.nx * deltaX + wi.nz * deltaZ < 0) {
+      wi.nx = -wi.nx;
+      wi.nz = -wi.nz;
+    }
+
     const key = it.typeId;
     if (!_skilt3dTexCache[key]) {
       _skilt3dTexCache[key] = makeSkiltTexture(it.typeId, it.def.name || it.typeId);
@@ -581,10 +652,10 @@ const scene3d = (() => {
     group.add(face);
 
     // Place sign on inner wall surface.
-    // Offset = WALL_THICK/2 (0.06m) + frame half-depth (0.02m) + 0.005m clearance = 0.085m.
-    // Not using WALL_THICK directly here because the skilt floats in front of the
-    // wall surface, not at it — the frame depth and clearance are intentional additions.
-    const wallThick = WALL_THICK / 2 + 0.02 + 0.005; // = 0.085m
+    // wi.wx/wz is on the polygon boundary = inner wall face (walls are pushed outward by WALL_THICK/2
+    // so their inner faces align with the polygon boundary). We only need frame half-depth + clearance.
+    // WALL_THICK/2 was here before the wall-push fix (commit 0b07aec) when wi.wx/wz was the wall center.
+    const wallThick = 0.02 + 0.005; // frame half-depth + clearance from inner wall face = 0.025m
     const posX = wi.wx + wi.nx * wallThick;
     const posZ = wi.wz + wi.nz * wallThick;
     group.position.set(posX, mountH, posZ);

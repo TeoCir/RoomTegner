@@ -7,6 +7,13 @@ const DEFS = [
   {id:'BALEX',   name:'Balex 20',    sap:'', W:1840, D:1100, H:1950, type:'compactor', wheels:0},
   {id:'BALEX10', name:'Balex 10',    sap:'', W:1360, D:840,  H:1920, type:'compactor', wheels:0},
   {id:'BUR',   name:'Bur',        sap:'B-0B-E',  W:1600, D:1200, H:1200, type:'cage',            wheels:4},
+  // type:'machine' — GLB with baked textures; materials are NOT replaced in buildContainer
+  {id:'ORWAK5070',   name:'Orwak Multi 5070',  sap:'', W:1740, D:880, H:2160, type:'machine', wheels:0},
+  // glbModelRotY: GLB has physical width (2550mm) along local Z, depth (920mm) along local X.
+  // Pre-rotating π/2 inside loadGLB aligns axes so bounding box gives size.x=2550, size.z=920
+  // → scale.x=1, scale.z=1 (no distortion). Standard wrapper rotation handles placement.
+  {id:'OW5070COMBI', name:'OW5070 Combi',       sap:'', W:2550, D:920, H:2265, type:'machine', wheels:0, glbModelRotY: Math.PI/2},
+  {id:'ENVIROPAC',   name:'EnviroPac Kjøler',   sap:'', W:965,  D:853, H:1475, type:'machine', wheels:0},
 ];
 
 const WALL_EL_DEFS = {

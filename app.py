@@ -5,7 +5,7 @@ from fastapi.templating import Jinja2Templates
 from starlette.middleware.base import BaseHTTPMiddleware
 from pydantic import BaseModel
 from typing import Optional
-import sqlite3, json, os, uuid, urllib.request
+import sqlite3, json, os, uuid, urllib.request, urllib.parse
 from datetime import datetime, timezone
 from dotenv import load_dotenv
 
@@ -25,7 +25,8 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             "script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; "
             "style-src 'self' 'unsafe-inline'; "
             "img-src 'self' data: blob: https://pub-27fd45166dba4be8a488b48df57742df.r2.dev https://www.grontpunkt.no; "
-            "connect-src 'self';"
+            "connect-src 'self' blob:; "
+            "worker-src blob:;"
         )
         return response
 
@@ -124,11 +125,16 @@ _r2_cache: dict = {}
 R2_CACHE_MAX = 200
 
 @app.get("/r2/{filename}")
-def proxy_r2(filename: str):
-    if filename in _r2_cache:
-        data, content_type = _r2_cache[filename]
+def proxy_r2(filename: str, v: str = ""):
+    # v is a cache-bust query param (e.g. ?v=2) — included in cache key so that
+    # bumping v forces a fresh fetch from R2, bypassing both this cache and the CDN.
+    cache_key = f"{filename}:{v}"
+    if cache_key in _r2_cache:
+        data, content_type = _r2_cache[cache_key]
         return Response(content=data, media_type=content_type)
-    url = f"{R2_BASE}/{filename}"
+    # Percent-encode the filename so non-ASCII chars (e.g. Norwegian ø in EnviroPac-Kjøler.glb)
+    # survive the HTTP request to R2. urllib does not encode Unicode automatically.
+    url = f"{R2_BASE}/{urllib.parse.quote(filename)}"
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
         with urllib.request.urlopen(req, timeout=10) as resp:
@@ -137,7 +143,7 @@ def proxy_r2(filename: str):
     except Exception:
         raise HTTPException(404, "Not found")
     if len(_r2_cache) < R2_CACHE_MAX:
-        _r2_cache[filename] = (data, content_type)
+        _r2_cache[cache_key] = (data, content_type)
     return Response(content=data, media_type=content_type)
 
 app.mount("/static", StaticFiles(directory="static"), name="static")

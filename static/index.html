@@ -36,6 +36,7 @@
     <div class="sb-tabs">
       <button class="sb-tab act" onclick="setSbTab('room',this)">Rom</button>
       <button class="sb-tab" onclick="setSbTab('containers',this)">Beholdere</button>
+      <button class="sb-tab" onclick="setSbTab('utstyr',this)">Utstyr</button>
       <button class="sb-tab" onclick="setSbTab('wall',this)">Vegg</button>
       <button class="sb-tab" onclick="setSbTab('skilt',this)">Skilt</button>
       <button class="sb-tab" onclick="setSbTab('saved',this)">Lagret</button>
@@ -92,9 +93,14 @@
         </div>
       </div>
 
-      <!-- CONTAINERS TAB -->
+      <!-- CONTAINERS TAB — L-bins only -->
       <div id="tab-containers" style="display:none">
         <div class="cl" id="clist"></div>
+      </div>
+
+      <!-- UTSTYR TAB — compactors, cages, machines -->
+      <div id="tab-utstyr" style="display:none">
+        <div class="cl" id="ulist"></div>
       </div>
 
       <!-- WALL ELEMENTS TAB -->

@@ -21,12 +21,19 @@ const scene3d = (() => {
     return gltfLoader;
   }
 
-  function loadGLB(url, targetW, targetH, targetD, callback) {
+  // preRotY: optional Y-rotation (radians) applied to the model BEFORE measuring the
+  // axis-aligned bounding box. This is needed for GLBs whose "width" face was exported
+  // along a local axis other than X. Rotating first means scale.x/z are computed against
+  // the already-rotated orientation, so the final world footprint matches targetW × targetD.
+  // The cache key includes preRotY so different orientations of the same GLB are stored separately.
+  function loadGLB(url, targetW, targetH, targetD, preRotY, callback) {
     const loader = getGLTFLoader();
     if (!loader) { callback(null); return; }
-    if (glbCache[url]) { callback(glbCache[url].clone()); return; }
+    const cacheKey = preRotY ? `${url}|${preRotY}` : url;
+    if (glbCache[cacheKey]) { callback(glbCache[cacheKey].clone()); return; }
     loader.load(url, (gltf) => {
       const model = gltf.scene;
+      if (preRotY) { model.rotation.y = preRotY; }
       model.updateMatrixWorld(true);
       const box = new THREE.Box3().setFromObject(model);
       const size = box.getSize(new THREE.Vector3());
@@ -35,7 +42,7 @@ const scene3d = (() => {
       model.updateMatrixWorld(true);
       // Store at origin — position applied per instance
       model.position.set(0, 0, 0);
-      glbCache[url] = model;
+      glbCache[cacheKey] = model;
       callback(model.clone());
     }, undefined, (err) => {
       console.warn('GLB load failed, using fallback:', err);
@@ -677,61 +684,78 @@ const scene3d = (() => {
     }
 
     // ── GLB models — proxied via local server to avoid CORS ──────────
+    // v=2: cache-bust so Cloudflare R2 CDN and the Python proxy both serve fresh files
     const R2 = '/r2';
+    const GLB_V = '?v=3';
     const GLB_MODELS = {
-      '140L':  `${R2}/140L.glb`,
-      '240L':  `${R2}/240.glb`,
-      '360L':  `${R2}/360.glb`,
-      '360LG': `${R2}/360.glb`,
-      '660L':  `${R2}/660L.glb`,
-      '660LG': `${R2}/660L.glb`,
-      '1000L': `${R2}/1000L.glb`,
-      'BALEX':   `${R2}/Balex.glb`,
-      'BALEX10': `${R2}/Balex.glb`,
+      '140L':  `${R2}/140L.glb${GLB_V}`,
+      '240L':  `${R2}/240.glb${GLB_V}`,
+      '360L':  `${R2}/360.glb${GLB_V}`,
+      '360LG': `${R2}/360.glb${GLB_V}`,
+      '660L':  `${R2}/660L.glb${GLB_V}`,
+      '660LG': `${R2}/660L.glb${GLB_V}`,
+      '1000L': `${R2}/1000L.glb${GLB_V}`,
+      'BALEX':   `${R2}/Balex.glb${GLB_V}`,
+      'BALEX10': `${R2}/Balex.glb${GLB_V}`,
+      // Machines — GLBs with baked textures (no material replacement; see texture-preserve branch below)
+      'ORWAK5070':   `${R2}/Orwak_Multi_5070.glb`,
+      'OW5070COMBI': `${R2}/OW5070_combi_restavfall.glb?v=7`,
+      'ENVIROPAC':   `${R2}/EnviroPac-Kjøler.glb`,
     };
 
     if (!skipGLB && GLB_MODELS[def.id]) {
-      loadGLB(GLB_MODELS[def.id], W, H, D, (model) => {
+      // glbSwapWD: some GLBs have their width/depth axes transposed relative to our
+      // convention (Three.js X = room width, Z = room depth). Swapping here fixes 3D
+      // scaling without touching the 2D footprint which uses the DEFS values directly.
+      const [glbW, glbD] = def.glbSwapWD ? [D, W] : [W, D];
+      loadGLB(GLB_MODELS[def.id], glbW, H, glbD, def.glbModelRotY || 0, (model) => {
         if (!model) {
           buildContainerFallback(it); return;
         }
 
-        // Replace GLB PBR materials with MeshPhongMaterial.
-        // GLB models use MeshStandardMaterial (PBR) which requires an environment
-        // map to render correctly — without one, high-metalness surfaces appear black.
-        // MeshPhongMaterial gives correct shading with the scene's directional lights.
-        model.traverse(child => {
-          if (!child.isMesh) return;
-          child.material = new THREE.MeshPhongMaterial({
-            color: 0x23272B,  // dark anthracite — matches NG container
-            shininess: 5,     // near-matte plastic, no silver sheen
-            specular: 0x050505,
+        if (def.id === 'BALEX' || def.id === 'BALEX10' || def.type === 'machine') {
+          // GLBs with baked textures — preserve albedo map (map) so the texture shows,
+          // but strip metalness/roughness maps and force fully matte PBR values.
+          // metalnessMap/roughnessMap in the GLB override scalar values and cause
+          // the metallic sheen even when metalness=0 — clearing them is the only fix.
+          model.traverse(child => {
+            if (!child.isMesh) return;
+            child.material = child.material.clone();
+            child.material.metalness     = 0;
+            child.material.roughness     = 0.9;   // force matte — ignore GLB roughness
+            child.material.metalnessMap  = null;  // PBR maps override scalars; must clear
+            child.material.roughnessMap  = null;
+            child.material.envMapIntensity = 0;
+            child.material.needsUpdate   = true;
           });
-        });
+        } else {
+          // Regular containers: clone the GLB's own MeshStandardMaterial and force it to
+          // render as flat dark anthracite. Keeping MeshStandardMaterial (rather than
+          // replacing with MeshPhongMaterial) avoids normal/shading conflicts with the
+          // new low-poly GLB geometry. metalness=0 + roughness=0.85 gives correct matte
+          // plastic look under directional lights without an environment map.
+          model.traverse(child => {
+            if (!child.isMesh) return;
+            child.material = child.material.clone();
+            child.material.color.setHex(0x23272B); // dark anthracite — matches NG containers
+            child.material.map      = null;         // clear any baked texture
+            child.material.metalness = 0;           // metalness > 0 appears black without envmap
+            child.material.roughness = 0.85;        // near-matte plastic
+            child.material.envMapIntensity = 0;
+          });
 
-        if (def.type.includes('glass')) {
-          // Override lid parts with glass blue regardless of fraksjon
-          model.traverse(child => {
-            if (child.isMesh) {
-              const b = new THREE.Box3().setFromObject(child);
-              if (b.min.y > H * 0.65) {
-                child.material = child.material.clone();
-                child.material.color.setHex(0x1a55aa);
+          if (def.type.includes('glass')) {
+            // Override lid parts with glass blue regardless of fraksjon
+            model.traverse(child => {
+              if (child.isMesh) {
+                const b = new THREE.Box3().setFromObject(child);
+                if (b.min.y > H * 0.65) {
+                  child.material = child.material.clone();
+                  child.material.color.setHex(0x1a55aa);
+                }
               }
-            }
-          });
-        }
-        if (def.id === 'BALEX' || def.id === 'BALEX10') {
-          const bluemat = new THREE.MeshStandardMaterial({
-            color: 0x1a6bc4,
-            roughness: 0.5,
-            metalness: 0.15,
-            emissive: new THREE.Color(0x0d3d75),
-            emissiveIntensity: 0.35,
-          });
-          model.traverse(child => {
-            if (child.isMesh) child.material = bluemat;
-          });
+            });
+          }
         }
         // Center model at origin, bottom at y=0, then wrap for positioning/rotation
         model.position.set(0, 0, 0);
@@ -743,7 +767,8 @@ const scene3d = (() => {
         const wrapper = new THREE.Group();
         wrapper.add(model);
         wrapper.position.set(cx, 0, cz);
-        wrapper.rotation.y = Math.PI - rot;
+        // glbExtraWrapperRot: per-model offset to compensate GLB axis orientation mismatches (e.g. OW5070COMBI)
+        wrapper.rotation.y = Math.PI - rot + (def.glbExtraWrapperRot || 0);
         setShadow(wrapper, false, false);
         addMesh(wrapper);
       });

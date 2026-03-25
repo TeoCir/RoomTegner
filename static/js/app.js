@@ -72,13 +72,14 @@ function scheduleRender2D() {
 
 // ── Sidebar tabs ─────────────────────────────────────────────────────────
 function setSbTab(tab, btn) {
-  ['room', 'containers', 'wall', 'skilt', 'saved'].forEach(t => {
+  ['room', 'containers', 'utstyr', 'wall', 'skilt', 'saved'].forEach(t => {
     document.getElementById('tab-' + t).style.display = t === tab ? '' : 'none';
   });
   document.querySelectorAll('.sb-tab').forEach(b => b.classList.remove('act'));
   btn.classList.add('act');
   if (tab === 'saved') loadSavedList();
   if (tab === 'skilt') buildSkiltList();
+  if (tab === 'utstyr') buildUtstyrList();
 }
 
 // ── Skilt list ────────────────────────────────────────────────────────────
@@ -145,14 +146,30 @@ function placePendingSkiltOnContainer(container) {
 // ── Container list ────────────────────────────────────────────────────────
 function buildContainerList() {
   const el = document.getElementById('clist'); el.innerHTML = '';
-  DEFS.forEach(d => {
-    const div = document.createElement('div'); div.className = 'ci';
-    div.innerHTML = `
-      <svg class="ci-icon" viewBox="0 0 34 42">${svgIcon(d)}</svg>
-      <div class="ci-info"><div class="ci-name">${d.name}</div><div class="ci-dims">${d.W}×${d.D}×${d.H}mm</div></div>
-      <button class="ci-add" onclick="addContainer('${d.id}')">+</button>`;
-    el.appendChild(div);
-  });
+  // Beholdere tab: L-bins only
+  DEFS.filter(d => d.type === 'bin' || d.type === 'bin-large' || d.type === 'bin-xl')
+    .forEach(d => {
+      const div = document.createElement('div'); div.className = 'ci';
+      div.innerHTML = `
+        <svg class="ci-icon" viewBox="0 0 34 42">${svgIcon(d)}</svg>
+        <div class="ci-info"><div class="ci-name">${d.name}</div><div class="ci-dims">${d.W}×${d.D}×${d.H}mm</div></div>
+        <button class="ci-add" onclick="addContainer('${d.id}')">+</button>`;
+      el.appendChild(div);
+    });
+}
+
+function buildUtstyrList() {
+  const el = document.getElementById('ulist'); el.innerHTML = '';
+  // Utstyr tab: everything that is not an L-bin (compactors, cages, machines)
+  DEFS.filter(d => d.type !== 'bin' && d.type !== 'bin-large' && d.type !== 'bin-xl')
+    .forEach(d => {
+      const div = document.createElement('div'); div.className = 'ci';
+      div.innerHTML = `
+        <svg class="ci-icon" viewBox="0 0 34 42">${svgIcon(d)}</svg>
+        <div class="ci-info"><div class="ci-name">${d.name}</div><div class="ci-dims">${d.W}×${d.D}×${d.H}mm</div></div>
+        <button class="ci-add" onclick="addContainer('${d.id}')">+</button>`;
+      el.appendChild(div);
+    });
 }
 
 function svgIcon(d) {
@@ -168,6 +185,15 @@ function svgIcon(d) {
     <line x1="25" y1="5" x2="25" y2="37" stroke="#aaa" stroke-width=".8"/>
     <circle cx="9" cy="39" r="2" fill="#777"/>
     <circle cx="25" cy="39" r="2" fill="#777"/>`;
+  }
+  if (d.type === 'machine') {
+    return `
+    <rect x="3" y="4" width="28" height="34" rx="2" fill="#3a3a3a"/>
+    <rect x="3" y="4" width="28" height="9" rx="2" fill="#2a2a2a"/>
+    <rect x="7" y="7" width="8" height="3" rx="1" fill="#555"/>
+    <rect x="19" y="7" width="8" height="3" rx="1" fill="#555"/>
+    <rect x="8" y="16" width="18" height="12" rx="1" fill="#4a4a4a"/>
+    <rect x="11" y="30" width="12" height="4" rx="1" fill="#E8521A"/>`;
   }
   if (d.type === 'compactor') {
     return `
@@ -968,9 +994,12 @@ function isNearAnyWall(it) {
   return w && w.dist < 0.8;
 }
 
-// Snap item centre to nearest wall — works in both rect and free mode
+// Snap item centre to nearest wall — works in both rect and free mode.
+// SNAP_DIST is edge-based: snap fires when the item's edge is within 0.25m of the wall.
+// max(hw,hd) is the half-dimension toward the wall; adding 0.25m gives a consistent
+// snap reach regardless of item size — fixes Balex/Orwak which have hw > 0.5m.
 function snapToWall(x, y, hw, hd) {
-  const SNAP_DIST = 0.50;
+  const SNAP_DIST = Math.max(hw, hd) + 0.25;
   const w = nearestWall(x, y);
   if (!w || w.dist > SNAP_DIST) return { x, y };
   const offset = Math.abs(w.nx) > Math.abs(w.ny) ? hw : hd;

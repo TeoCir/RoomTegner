@@ -206,6 +206,7 @@ function render2D() {
       if (it.def.type === 'cage') drawCage2D(ctx, bw, bd, isSel, false);
       else if (it.def.type === 'rollcage') drawCage2D(ctx, bw, bd, isSel, true);
       else if (it.def.type === 'compactor') drawCompactor2D(ctx, bw, bd, isSel, it.def);
+      else if (it.def.type === 'machine')   drawMachine2D(ctx, bw, bd, isSel, it.def);
       else drawBin2D(ctx, bw, bd, isSel, it.def, it.fraksjon, it.rot);
 
       // Pending skilt hover highlight
@@ -585,6 +586,45 @@ function drawCompactor2D(ctx, bw, bd, isSel, def) {
     ctx.fillStyle = '#E8521A'; ctx.font = 'bold 9px Inter,sans-serif';
     ctx.fillText(def.W+'mm', 0, -bd/2-14);
     ctx.save(); ctx.rotate(-Math.PI/2); ctx.fillText(def.D+'mm', 0, bw/2+14); ctx.restore();
+  }
+}
+
+// Generic industrial machine (Orwak, EnviroPac, etc.) — dark body, panel stripe, name label.
+// Machines have baked GLB textures in 3D; in 2D we show a clean footprint box.
+function drawMachine2D(ctx, bw, bd, isSel, def) {
+  // Body
+  ctx.fillStyle = '#3a3a3a';
+  ctx.beginPath(); ctx.rect(-bw/2, -bd/2, bw, bd); ctx.fill();
+
+  // Top panel stripe
+  ctx.fillStyle = '#2a2a2a';
+  ctx.beginPath(); ctx.rect(-bw/2, -bd/2, bw, bd * 0.22); ctx.fill();
+
+  // NG badge
+  const bW = Math.min(bw * 0.38, 34), bH = 10;
+  ctx.fillStyle = '#E8521A';
+  ctx.beginPath(); ctx.roundRect(-bW/2, -bd/2 + bd * 0.30, bW, bH, 3); ctx.fill();
+  ctx.fillStyle = '#fff'; ctx.font = `bold ${Math.max(6, Math.min(9, bW/3.5))}px Inter,sans-serif`;
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText('NG', 0, -bd/2 + bd * 0.30 + bH/2);
+
+  // Name label
+  ctx.fillStyle = 'rgba(255,255,255,0.65)';
+  ctx.font = `bold ${Math.max(6, Math.min(9, bw/10))}px Inter,sans-serif`;
+  ctx.fillText(def.name, 0, -bd/2 + bd * 0.30 + bH + 10);
+
+  // Outline
+  ctx.strokeStyle = isSel ? '#E8521A' : 'rgba(0,0,0,0.30)';
+  ctx.lineWidth = isSel ? 2.5 : 1.5;
+  ctx.beginPath(); ctx.rect(-bw/2, -bd/2, bw, bd); ctx.stroke();
+
+  if (isSel) {
+    ctx.strokeStyle = '#E8521A'; ctx.lineWidth = 1.5; ctx.setLineDash([4, 3]);
+    ctx.beginPath(); ctx.rect(-bw/2 - 7, -bd/2 - 7, bw + 14, bd + 14); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = '#E8521A'; ctx.font = 'bold 9px Inter,sans-serif';
+    ctx.fillText(def.W + 'mm', 0, -bd/2 - 14);
+    ctx.save(); ctx.rotate(-Math.PI/2); ctx.fillText(def.D + 'mm', 0, bw/2 + 14); ctx.restore();
   }
 }
 

@@ -3,10 +3,9 @@ services:
     name: romskisse
     env: python
     buildCommand: pip install -r requirements.txt
-    startCommand: python app.py
+    startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /
     envVars:
-      - key: PORT
-        value: 8000
       - key: DB_PATH
         value: /opt/render/project/data/sketches.db
     disk:

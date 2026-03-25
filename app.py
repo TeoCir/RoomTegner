@@ -7,10 +7,13 @@ from pydantic import BaseModel
 from typing import Optional
 import sqlite3, json, os, uuid, urllib.request, urllib.parse
 from datetime import datetime, timezone
+from pathlib import Path
 from dotenv import load_dotenv
 
 load_dotenv()
 API_KEY = os.environ.get("API_KEY", "")
+BASE_DIR = Path(__file__).resolve().parent
+STATIC_DIR = BASE_DIR / "static"
 
 app = FastAPI()
 
@@ -32,14 +35,14 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 
 app.add_middleware(SecurityHeadersMiddleware)
 
-templates = Jinja2Templates(directory="static")
+templates = Jinja2Templates(directory=str(STATIC_DIR))
 
 def require_api_key(request: Request):
     key = request.headers.get("X-API-Key", "")
     if not API_KEY or key != API_KEY:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
-DB = os.environ.get("DB_PATH", "sketches.db")
+DB = os.environ.get("DB_PATH", str(BASE_DIR / "sketches.db"))
 
 def init_db():
     db_dir = os.path.dirname(DB)
@@ -146,7 +149,7 @@ def proxy_r2(filename: str, v: str = ""):
         _r2_cache[cache_key] = (data, content_type)
     return Response(content=data, media_type=content_type)
 
-app.mount("/static", StaticFiles(directory="static"), name="static")
+app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 @app.get("/{full_path:path}")
 def serve_spa(request: Request, full_path: str = ""):

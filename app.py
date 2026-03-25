@@ -153,7 +153,11 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 @app.get("/{full_path:path}")
 def serve_spa(request: Request, full_path: str = ""):
-    return templates.TemplateResponse("index.html", {"request": request, "api_key": API_KEY})
+    return templates.TemplateResponse(
+        request=request,
+        name="index.html",
+        context={"request": request, "api_key": API_KEY},
+    )
 
 if __name__ == "__main__":
     import uvicorn

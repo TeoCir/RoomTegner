@@ -9,11 +9,12 @@ const DEFS = [
   {id:'BUR',   name:'Bur',        sap:'B-0B-E',  W:1600, D:1200, H:1200, type:'cage',            wheels:4},
   // type:'machine' — GLB with baked textures; materials are NOT replaced in buildContainer
   {id:'ORWAK5070',   name:'Orwak Multi 5070',  sap:'', W:1740, D:880, H:2160, type:'machine', wheels:0},
-  // glbModelRotY: GLB has physical width (2550mm) along local Z, depth (920mm) along local X.
-  // Pre-rotating π/2 inside loadGLB aligns axes so bounding box gives size.x=2550, size.z=920
-  // → scale.x=1, scale.z=1 (no distortion). Standard wrapper rotation handles placement.
-  {id:'OW5070COMBI', name:'OW5070 Combi',       sap:'', W:2550, D:920, H:2265, type:'machine', wheels:0, glbModelRotY: Math.PI/2},
+  // D:1261 = operational depth (door open). GLB has loading door baked open as one mesh — raw Z
+  // bbox = 1.261m. Using D:1261 + glb3dD:1.261 gives scale.z=1 (no distortion) and places the
+  // 2D center 630mm from wall so the 3D model sits flush without clipping. Closed body = 920mm.
+  {id:'OW5070COMBI', name:'OW5070 Combi',       sap:'', W:2550, D:1261, H:2265, type:'machine', wheels:0, glb3dD:1.261},
   {id:'ENVIROPAC',   name:'EnviroPac Kjøler',   sap:'', W:965,  D:853, H:1475, type:'machine', wheels:0},
+  {id:'APS800',      name:'APS 800',            sap:'', W:1150, D:1574, H:2360, type:'machine', wheels:0},
 ];
 
 const WALL_EL_DEFS = {

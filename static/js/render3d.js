@@ -21,19 +21,24 @@ const scene3d = (() => {
     return gltfLoader;
   }
 
-  // preRotY: optional Y-rotation (radians) applied to the model BEFORE measuring the
-  // axis-aligned bounding box. This is needed for GLBs whose "width" face was exported
-  // along a local axis other than X. Rotating first means scale.x/z are computed against
-  // the already-rotated orientation, so the final world footprint matches targetW × targetD.
-  // The cache key includes preRotY so different orientations of the same GLB are stored separately.
-  function loadGLB(url, targetW, targetH, targetD, preRotY, callback) {
+  // preRotY:       optional Y-rotation applied BEFORE bbox measurement (for axis-misaligned GLBs).
+  // hideMeshNames: optional string[] — meshes matching by name are hidden before bbox measurement
+  //                and stay hidden permanently. Use this to exclude open doors/hatches that inflate
+  //                the bounding box beyond the machine's closed physical footprint.
+  // Cache key includes both params so variants are stored separately.
+  function loadGLB(url, targetW, targetH, targetD, preRotY, callback, hideMeshNames) {
     const loader = getGLTFLoader();
     if (!loader) { callback(null); return; }
-    const cacheKey = preRotY ? `${url}|${preRotY}` : url;
+    const hideKey = hideMeshNames && hideMeshNames.length ? hideMeshNames.join(',') : '';
+    const cacheKey = [url, preRotY || 0, hideKey].join('|');
     if (glbCache[cacheKey]) { callback(glbCache[cacheKey].clone()); return; }
     loader.load(url, (gltf) => {
       const model = gltf.scene;
       if (preRotY) { model.rotation.y = preRotY; }
+      // Hide meshes before bbox so protruding parts (open door etc.) don't inflate the scale
+      if (hideMeshNames && hideMeshNames.length) {
+        model.traverse(c => { if (c.isMesh && hideMeshNames.includes(c.name)) c.visible = false; });
+      }
       model.updateMatrixWorld(true);
       const box = new THREE.Box3().setFromObject(model);
       const size = box.getSize(new THREE.Vector3());
@@ -183,8 +188,12 @@ const scene3d = (() => {
   }
 
   function init() {
+    if (initialized) return; // safe to call multiple times (e.g. from PDF export before 3D tab opened)
     const container = document.getElementById('canvas-3d');
-    const W = container.clientWidth, H = container.clientHeight;
+    // Use fallback size when container is hidden (display:none) during PDF export from 2D mode.
+    // clientWidth/clientHeight return 0 for hidden elements — a 0×0 renderer is useless.
+    const W = container.clientWidth  || 1200;
+    const H = container.clientHeight || 800;
 
     scene = new THREE.Scene();
     scene.background = new THREE.Color(0xb0b8bf);
@@ -261,6 +270,15 @@ const scene3d = (() => {
   function rebuild() {
     if (!initialized) { markDirty(); return; }
     markDirty();
+  }
+
+  // Synchronous rebuild — bypasses the _dirty flag and animation-loop delay.
+  // Used by PDF export so the scene is guaranteed current before captureTopDown() runs.
+  // GLBs not yet loaded will fall back to box geometry (same as the normal async path).
+  function rebuildSync() {
+    if (!initialized) return;
+    _doRebuild();
+    _dirty = false;
   }
 
   function _doRebuild() {
@@ -638,21 +656,20 @@ const scene3d = (() => {
     }
     const texture = _skilt3dTexCache[key];
 
-    // White frame box — gives the sign physical depth (visible from the sides when
-    // orbiting) and provides the white border around the icon. The box front face
-    // is at z=+0.02; the texture plane sits 2mm in front of it so the frame border
-    // shows uniformly on all sides regardless of icon background colour.
+    // White frame — thin backing plane that creates the white border around the icon.
+    // Kept at 4mm depth so it is nearly invisible from the side (previous 40mm caused
+    // a visible white stripe when containers were placed directly in front of the sign).
     const frame = new THREE.Mesh(
-      new THREE.BoxGeometry(sz + 0.04, sz + 0.04, 0.04),
+      new THREE.BoxGeometry(sz + 0.04, sz + 0.04, 0.004),
       new THREE.MeshLambertMaterial({ color: 0xffffff })
     );
 
-    // Sign icon/texture — floats 2mm in front of frame face to avoid z-fighting
+    // Sign icon/texture — floats 3mm in front of frame face to avoid z-fighting
     const face = new THREE.Mesh(
       new THREE.PlaneGeometry(sz, sz),
       new THREE.MeshBasicMaterial({ map: texture, side: THREE.FrontSide })
     );
-    face.position.z = 0.022;
+    face.position.z = 0.005;
 
     const group = new THREE.Group();
     group.add(frame);
@@ -662,7 +679,7 @@ const scene3d = (() => {
     // wi.wx/wz is on the polygon boundary = inner wall face (walls are pushed outward by WALL_THICK/2
     // so their inner faces align with the polygon boundary). We only need frame half-depth + clearance.
     // WALL_THICK/2 was here before the wall-push fix (commit 0b07aec) when wi.wx/wz was the wall center.
-    const wallThick = 0.02 + 0.005; // frame half-depth + clearance from inner wall face = 0.025m
+    const wallThick = 0.002 + 0.003; // frame half-depth (0.002) + clearance from inner wall face
     const posX = wi.wx + wi.nx * wallThick;
     const posZ = wi.wz + wi.nz * wallThick;
     group.position.set(posX, mountH, posZ);
@@ -699,8 +716,9 @@ const scene3d = (() => {
       'BALEX10': `${R2}/Balex.glb${GLB_V}`,
       // Machines — GLBs with baked textures (no material replacement; see texture-preserve branch below)
       'ORWAK5070':   `${R2}/Orwak_Multi_5070.glb`,
-      'OW5070COMBI': `${R2}/OW5070_combi_restavfall.glb?v=7`,
+      'OW5070COMBI': `${R2}/OW5070_combi_restavfall.glb?v=9`,
       'ENVIROPAC':   `${R2}/EnviroPac-Kjøler.glb`,
+      'APS800':      `${R2}/APS_800.glb`,
     };
 
     if (!skipGLB && GLB_MODELS[def.id]) {
@@ -708,9 +726,21 @@ const scene3d = (() => {
       // convention (Three.js X = room width, Z = room depth). Swapping here fixes 3D
       // scaling without touching the 2D footprint which uses the DEFS values directly.
       const [glbW, glbD] = def.glbSwapWD ? [D, W] : [W, D];
-      loadGLB(GLB_MODELS[def.id], glbW, H, glbD, def.glbModelRotY || 0, (model) => {
+      // glb3dD: overrides targetD for loadGLB only — used when the GLB bounding box
+      // in Z is larger than D (e.g. door baked open inflates depth). Setting glb3dD to
+      // the raw GLB Z extent gives scale.z=1 (no compression), so the machine body
+      // renders at correct depth. 2D footprint still uses D from DEFS unchanged.
+      const glb3dD = def.glb3dD || glbD;
+      loadGLB(GLB_MODELS[def.id], glbW, H, glb3dD, def.glbModelRotY || 0, (model) => {
         if (!model) {
           buildContainerFallback(it); return;
+        }
+        // glbDebug: logs all mesh names to console — use temporarily to identify mesh names
+        // for glbHideMeshNames (e.g. open door parts that inflate the bounding box)
+        if (def.glbDebug) {
+          console.group('GLB mesh names for ' + def.id);
+          model.traverse(c => { if (c.isMesh) console.log(c.name); });
+          console.groupEnd();
         }
 
         if (def.id === 'BALEX' || def.id === 'BALEX10' || def.type === 'machine') {
@@ -771,7 +801,7 @@ const scene3d = (() => {
         wrapper.rotation.y = Math.PI - rot + (def.glbExtraWrapperRot || 0);
         setShadow(wrapper, false, false);
         addMesh(wrapper);
-      });
+      }, def.glbHideMeshNames || []);
       return;
     }
 
@@ -1078,5 +1108,57 @@ const scene3d = (() => {
     if (lbl) lbl.textContent = it.wallH.toFixed(2) + 'm';
   }
 
-  return { init, rebuild, setAngle, resize, markDirty, nudgeSkilt, get _initialized() { return initialized; } };
+  // Renders the scene from directly overhead using an OrthographicCamera and returns
+  // a PNG data URL for use in PDF export. OrthographicCamera removes perspective
+  // distortion so the top-down view matches the 2D canvas coordinate system exactly.
+  // The frustum is auto-sized to frame the room with 0.5m padding on each side.
+  // Uses the existing renderer canvas — no new WebGL context needed.
+  function captureTopDown() {
+    if (!initialized) return null;
+
+    // Room bounding box in 3D XZ (canvas X→Three X, canvas Y→Three Z)
+    let minX, maxX, minZ, maxZ;
+    if (state.roomMode === 'rect') {
+      minX = 0; maxX = state.roomW; minZ = 0; maxZ = state.roomD;
+    } else {
+      const xs = state.poly.map(p => p.x), zs = state.poly.map(p => p.y);
+      minX = Math.min(...xs); maxX = Math.max(...xs);
+      minZ = Math.min(...zs); maxZ = Math.max(...zs);
+    }
+
+    const cx = (minX + maxX) / 2, cz = (minZ + maxZ) / 2;
+    const PAD = 0.5; // metres of padding around room
+    const hw = (maxX - minX) / 2 + PAD;
+    const hd = (maxZ - minZ) / 2 + PAD;
+
+    // Capture at fixed 1200×800 regardless of current viewport size — keeps PDF resolution
+    // consistent whether or not the user has opened the 3D view. Restore after capture.
+    const CAPTURE_W = 1200, CAPTURE_H = 800;
+    const dpr = window.devicePixelRatio || 1;
+    const prevW = renderer.domElement.width  / dpr;
+    const prevH = renderer.domElement.height / dpr;
+    renderer.setSize(CAPTURE_W, CAPTURE_H);
+
+    const aspect = CAPTURE_W / CAPTURE_H;
+    const hh = Math.max(hw / aspect, hd);
+    const hw2 = hh * aspect;
+
+    const cam = new THREE.OrthographicCamera(-hw2, hw2, hh, -hh, 0.1, 500);
+    cam.position.set(cx, 200, cz); // 200m above room (room is at y=0)
+    cam.lookAt(cx, 0, cz);
+    // up=(0,0,-1) so low-Z (top of 2D canvas) maps to top of image
+    cam.up.set(0, 0, -1);
+
+    renderer.render(scene, cam);
+    const dataUrl = renderer.domElement.toDataURL('image/png');
+
+    // Restore renderer to previous size so the live 3D view is unaffected
+    renderer.setSize(prevW, prevH);
+
+    // Return frustum params alongside the image so the PDF compositing step
+    // can map container room coordinates to pixel positions without re-computing.
+    return { dataUrl, cx, cz, hw2, hh };
+  }
+
+  return { init, rebuild, rebuildSync, setAngle, resize, markDirty, nudgeSkilt, captureTopDown, get _initialized() { return initialized; } };
 })();

@@ -127,9 +127,10 @@ function placePendingSkiltOnContainer(container) {
   const binH = container.def.H / 1000;
   // Remove any existing linked skilt for this container
   state.items = state.items.filter(s => !(s.kind === 'skilt' && s._linkedTo === container.id));
+  const skiltSizeM = Math.min(Math.max((container.def.W / 1000) * 0.70, 0.25), 0.65);
   state.items.push({
     id: state.nextId++, typeId: ps.id, kind: 'skilt',
-    def: ps.def, x: container.x, y: container.y, rot: 0, size: 0.65,
+    def: ps.def, x: container.x, y: container.y, rot: 0, size: skiltSizeM,
     wallH: binH + 0.35, wallOffset: 0,
     _linkedTo: container.id,
     _wallNx: w ? w.nx : 0, _wallNy: w ? w.ny : -1,
@@ -1028,9 +1029,12 @@ function checkAutoSkilt(it) {
   const def = SKILT_DEFS.find(s => s.id === skiltId);
   if (!def) return;
   const binH = it.def.H / 1000;
+  // Sign size scales with container width: ~70% of bin width, clamped 0.25–0.65m.
+  // Small bins (140L=480mm → 0.34m sign) get smaller labels so they don't dwarf the container.
+  const skiltSize = Math.min(Math.max((it.def.W / 1000) * 0.70, 0.25), 0.65);
   state.items.push({
     id: state.nextId++, typeId: skiltId, kind: 'skilt',
-    def, x: it.x, y: it.y, rot: 0, size: 0.45,
+    def, x: it.x, y: it.y, rot: 0, size: skiltSize,
     wallH: binH + 0.4, wallOffset: 0,
     _linkedTo: it.id,
     _wallNx: w.nx, _wallNy: w.ny,
@@ -1329,6 +1333,72 @@ function setToday() {
   document.getElementById('pdfDate').value = s;
 }
 
+// Composites Cloudflare R2 fraksjon icons (same PNGs used for wall signs) onto the
+// captured top-down 3D image. Called only during PDF export — zero impact on live views.
+// Icons are loaded via the local /r2/ proxy (same path as GLB models) so that the canvas
+// is never cross-origin tainted — toDataURL() requires same-origin pixel access.
+async function overlayFraksjonIcons({ dataUrl, cx, cz, hw2, hh }) {
+  const W = 1200, H = 800;
+  const canvas = document.createElement('canvas');
+  canvas.width = W; canvas.height = H;
+  const ctx = canvas.getContext('2d');
+
+  // Draw 3D scene as background
+  const bg = await new Promise(res => {
+    const img = new Image(); img.onload = () => res(img); img.src = dataUrl;
+  });
+  ctx.drawImage(bg, 0, 0);
+
+  // Room metres → image pixels.
+  // Camera up=(0,0,-1): lower Z maps to top of image, so py increases with wz.
+  const toPixel = (wx, wz) => ({
+    px: ((wx - cx) / hw2 + 1) / 2 * W,
+    py: (wz - (cz - hh)) / (2 * hh) * H,
+  });
+
+  // Collect containers that have a fraksjon (machines have baked textures — skip them)
+  const containers = state.items.filter(it =>
+    it.kind === 'container' && it.fraksjon && it.def.type !== 'machine'
+  );
+
+  // Pre-load each unique fraksjon icon via /r2/ proxy — no crossOrigin needed because
+  // the proxy serves from the same origin, so the canvas stays untainted for toDataURL().
+  const iconCache = {};
+  await Promise.all([...new Set(containers.map(it => it.fraksjon))].map(frakId => {
+    const skilt = SKILT_DEFS.find(s => s.id === 'sk-' + frakId);
+    if (!skilt) return Promise.resolve();
+    // Extract filename from R2 URL and route through local proxy (same pattern as GLBs)
+    const filename = skilt.url.split('/').pop();
+    return new Promise(res => {
+      const img = new Image();
+      img.onload  = () => { iconCache[frakId] = img; res(); };
+      img.onerror = res; // skip silently if icon is unavailable
+      img.src = '/r2/' + filename;
+    });
+  }));
+
+  // Draw icon centered on each container position
+  for (const it of containers) {
+    const icon = iconCache[it.fraksjon];
+    if (!icon) continue;
+    const { px, py } = toPixel(it.x, it.y);
+    // Size: smaller of pixel-width / pixel-depth × 0.80, clamped 28–80px
+    const cPxW = (it.def.W / 1000) / (2 * hw2) * W;
+    const cPxD = (it.def.D / 1000) / (2 * hh) * H;
+    const size = Math.min(Math.max(Math.min(cPxW, cPxD) * 0.80, 28), 80);
+    const r = size / 2;
+    // Thin white border so icons pop off the dark container body
+    ctx.fillStyle = 'rgba(255,255,255,0.9)';
+    ctx.fillRect(px - r - 2, py - r - 2, size + 4, size + 4);
+    // Crop source: full width, top 75% of height — removes the text label row
+    // that the R2 PNGs include at the bottom, keeping only the coloured icon graphic.
+    ctx.drawImage(icon, 0, 0, icon.naturalWidth, icon.naturalHeight * 0.75,
+                  px - r, py - r, size, size);
+  }
+
+  return canvas.toDataURL('image/png');
+}
+
 async function generatePDF() {
   const { jsPDF } = window.jspdf;
   const customer = document.getElementById('pdfCustomer').value || '—';
@@ -1359,20 +1429,27 @@ async function generatePDF() {
   const sellerLine = seller ? `Selger: ${seller}  ·  ${dateNO}` : dateNO;
   doc.text(sellerLine, PW - 10, 12, { align: 'right' });
 
-  // Canvas snapshot — fit room to canvas first so the export is always clean
-  // regardless of the user's current zoom/pan. UI overlays (stykkliste panel,
-  // scale bar) are suppressed via state._pdfExporting and re-drawn as proper
-  // PDF elements instead of appearing as raw canvas chrome in the image.
-  const canvas = document.getElementById('canvas-2d');
-  const savedPpm = state.ppm, savedZoom = state.zoom, savedPanX = state.panX, savedPanY = state.panY;
-  calcPPM();           // fits room to canvas, resets zoom to 1.0
-  state.panX = 0; state.panY = 0;
-  state._pdfExporting = true;
-  render2D();
-  const imgData = canvas.toDataURL('image/png');
-  state._pdfExporting = false;
-  state.ppm = savedPpm; state.zoom = savedZoom; state.panX = savedPanX; state.panY = savedPanY;
-  render2D(); // restore user's view
+  // Room map image — 3D orthographic top-down render.
+  // init() + rebuildSync() ensure the scene is current even if user never opened 3D view.
+  // Icon overlay (overlayFraksjonIcons) is disabled — coordinate mapping breaks on
+  // large/irregular rooms. Revisit with a better approach.
+  if (!scene3d._initialized) scene3d.init();
+  scene3d.rebuildSync();
+  const captured = scene3d.captureTopDown(); // { dataUrl, cx, cz, hw2, hh } or null
+  let imgData;
+  if (captured) {
+    imgData = captured.dataUrl;
+  } else {
+    // Fallback: clean 2D snapshot if 3D renderer failed (e.g. very small viewport)
+    const canvas = document.getElementById('canvas-2d');
+    const savedPpm = state.ppm, savedZoom = state.zoom, savedPanX = state.panX, savedPanY = state.panY;
+    calcPPM(); state.panX = 0; state.panY = 0;
+    state._pdfExporting = true; render2D();
+    imgData = canvas.toDataURL('image/png');
+    state._pdfExporting = false;
+    state.ppm = savedPpm; state.zoom = savedZoom; state.panX = savedPanX; state.panY = savedPanY;
+    render2D();
+  }
   const tableW = 68;
   const mapX = 8, mapY = 20, mapW = PW - tableW - 18, mapH = PH - 30;
   doc.addImage(imgData, 'PNG', mapX, mapY, mapW, mapH);
@@ -1388,11 +1465,11 @@ async function generatePDF() {
   doc.setFillColor(...LIGHT);
   doc.rect(tx - 2, ty, tableW, mapH, 'F');
 
-  // Panel header
+  // Panel header — 10mm tall matches page 2 table header height
   doc.setFillColor(...DARK);
-  doc.rect(tx - 2, ty, tableW, 8, 'F');
+  doc.rect(tx - 2, ty, tableW, 10, 'F');
   doc.setTextColor(...WHITE); doc.setFontSize(7.5); doc.setFont('helvetica', 'bold');
-  doc.text('STYKKLISTE', tx + tableW/2 - 2, ty + 5.5, { align: 'center' });
+  doc.text('STYKKLISTE', tx + tableW/2 - 2, ty + 6.5, { align: 'center' });
 
   // Group by type + fraksjon
   const grouped = {};
@@ -1403,7 +1480,7 @@ async function generatePDF() {
   });
 
   let row = 0;
-  const rowH = 9, startY = ty + 12;
+  const rowH = 9, startY = ty + 14;
   doc.setFontSize(7); doc.setFont('helvetica', 'normal');
 
   Object.values(grouped).forEach((g, idx) => {
@@ -1477,18 +1554,19 @@ async function generatePDF() {
   doc.text(`${customer}  ·  ${location}`, PW - 10, 7, { align: 'right' });
   doc.text(sellerLine, PW - 10, 12, { align: 'right' });
 
-  // Table header
+  // Table header — 10mm tall so text has clear vertical padding on both sides
   const cols = { nr: 10, type: 22, fraksjon: 80, sap: 148, dim: 192, antall: 248 };
   const tY = 24;
+  const HDR_H = 10;
   doc.setFillColor(...DARK);
-  doc.rect(8, tY, PW - 16, 8, 'F');
+  doc.rect(8, tY, PW - 16, HDR_H, 'F');
   doc.setTextColor(...WHITE); doc.setFontSize(7); doc.setFont('helvetica', 'bold');
-  doc.text('#',           cols.nr,      tY + 5.5);
-  doc.text('Beholder',   cols.type,     tY + 5.5);
-  doc.text('Fraksjon',   cols.fraksjon, tY + 5.5);
-  doc.text('SAP-nr',     cols.sap,      tY + 5.5);
-  doc.text('B×D×H (mm)', cols.dim,      tY + 5.5);
-  doc.text('Ant.',        cols.antall,   tY + 5.5);
+  doc.text('#',           cols.nr,      tY + 6.5);
+  doc.text('Beholder',   cols.type,     tY + 6.5);
+  doc.text('Fraksjon',   cols.fraksjon, tY + 6.5);
+  doc.text('SAP-nr',     cols.sap,      tY + 6.5);
+  doc.text('B×D×H (mm)', cols.dim,      tY + 6.5);
+  doc.text('Ant.',        cols.antall,   tY + 6.5);
 
   // Group by type + fraksjon with quantity — reuses the same grouped object from page 1.
   // One row per unique combination rather than one row per individual container,
@@ -1496,7 +1574,7 @@ async function generatePDF() {
   const groupedRows = Object.values(grouped).sort((a, b) => a.def.name.localeCompare(b.def.name));
   let r2 = 0;
   groupedRows.forEach((g, idx) => {
-    const ry2 = tY + 10 + r2 * 8;
+    const ry2 = tY + HDR_H + 2 + r2 * 8;
     if (ry2 > PH - 16) return;
     if (r2 % 2 === 0) { doc.setFillColor(...LIGHT); doc.rect(8, ry2 - 5, PW - 16, 8, 'F'); }
 
@@ -1517,7 +1595,7 @@ async function generatePDF() {
   });
 
   // Summary box
-  const sumY = tY + 10 + r2 * 8 + 6;
+  const sumY = tY + HDR_H + 2 + r2 * 8 + 6;
   if (sumY < PH - 20) {
     doc.setFillColor(255, 248, 240);
     doc.setDrawColor(...NG); doc.setLineWidth(0.4);

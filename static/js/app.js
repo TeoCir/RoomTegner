@@ -29,6 +29,32 @@ window.addEventListener('load', () => {
   } catch(e) {}
   renderRoomTabs();
   requestAnimationFrame(() => { resizeAll(); setRoomMode(state.roomMode); render(); });
+
+  // Preload all GLB models in the background so 3D view is instant when the user first opens it.
+  // The overlay is shown during this load and fades out when done.
+  const overlay   = document.getElementById('loading-overlay');
+  const bar       = document.getElementById('loading-bar');
+  const countEl   = document.getElementById('loading-count');
+  scene3d.preloadAll(
+    (loaded, total) => {
+      const pct = Math.round((loaded / total) * 100);
+      if (bar)     bar.style.width = pct + '%';
+      if (countEl) countEl.textContent = `${loaded} / ${total}`;
+    },
+    () => {
+      // Initialise 3D scene eagerly now that all GLBs are in browser cache.
+      // Doing this here (rather than lazily on first 3D tab click or PDF export)
+      // guarantees the WebGL context is ready before the user can trigger PDF export,
+      // which avoids a race where init() is called on a hidden canvas and may fail
+      // to produce a valid context in time for captureTopDown().
+      if (!scene3d._initialized) scene3d.init();
+
+      if (!overlay) return;
+      overlay.classList.add('fade-out');
+      // Remove from DOM after fade so it has zero impact on layout/events
+      overlay.addEventListener('transitionend', () => overlay.remove(), { once: true });
+    }
+  );
 });
 
 function resizeAll() {
@@ -839,21 +865,26 @@ function onMM(e) {
     const { rx, ry } = c2r(mx, my);
     const def = state.pendingContainer.def;
     const W2 = def.W / 2000, D2 = def.D / 2000;
-    // Step 1: find nearest wall to determine auto-rotation
+    // Step 1: find nearest wall to determine auto-rotation — cached once per mousemove
+    // so snapToWall() below can reuse the result instead of calling nearestWall() again.
     const w = nearestWall(rx, ry);
     const rot = (w && w.dist < 0.8) ? Math.atan2(w.nx, -w.ny) : 0;
     // Step 2: rotation-corrected effective half-extents for the snap offset
     const cos = Math.abs(Math.cos(rot)), sin = Math.abs(Math.sin(rot));
     const hw = W2 * cos + D2 * sin;
     const hd = W2 * sin + D2 * cos;
-    // Step 3: snap position using correct half-extents, then clamp to room in rect mode
-    let pos = snapToWall(rx, ry, hw, hd);
+    // Step 3: snap position using precomputed wall result to avoid a second nearestWall() call
+    const SNAP_DIST = Math.max(hw, hd) + 0.25;
+    let pos = { x: rx, y: ry };
+    if (w && w.dist < SNAP_DIST) {
+      pos = { x: w.wallX + w.nx * hw, y: w.wallY + w.ny * hd };
+    }
     if (state.roomMode === 'rect') {
       pos = { x: Math.max(hw, Math.min(state.roomW - hw, pos.x)),
               y: Math.max(hd, Math.min(state.roomD - hd, pos.y)) };
     }
     state._pendingContainerPos = { x: pos.x, y: pos.y, rot };
-    render(); return;
+    scheduleRender2D(); return;
   }
   // Pending skilt: highlight hovered container
   if (state.pendingSkilt) {
@@ -866,7 +897,7 @@ function onMM(e) {
       if (Math.abs(rx - it.x) < hw + 0.1 && Math.abs(ry - it.y) < hd + 0.1)
         state._skiltHoverId = it.id;
     });
-    render(); return;
+    scheduleRender2D(); return;
   }
   // Inner wall preview: snap and repaint on every mouse move
   if (state.tool === 'innerwall' && state.innerWallStart) {
@@ -876,7 +907,7 @@ function onMM(e) {
     const len = Math.hypot(pt.x - state.innerWallStart.x, pt.y - state.innerWallStart.y);
     const hint = pt.snapped ? ' · <b>Snappet</b>' : ' · Shift=90°';
     setInfo(`<b>${len.toFixed(2)} m</b>${hint} · Klikk for neste punkt · Esc=ferdig`);
-    render2D(); return;
+    scheduleRender2D(); return;
   }
 
   if (state.roomMode === 'free' && state.polyDraw) {
@@ -906,7 +937,7 @@ function onMM(e) {
     } else {
       setInfo('Klikk for første hjørnepunkt · Shift=90° · Scroll=zoom');
     }
-    render();
+    scheduleRender2D();
   }
 }
 
@@ -1693,8 +1724,14 @@ async function generatePDF() {
   // Icon overlay (overlayFraksjonIcons) is disabled — coordinate mapping breaks on
   // large/irregular rooms. Revisit with a better approach.
   if (!scene3d._initialized) scene3d.init();
+  // Ensure all GLB models for current items are in glbCache before rebuilding.
+  // glbCache hits are synchronous, so rebuildSync() can use real GLB models
+  // rather than plain box fallbacks — giving a proper 3D top-down PDF image.
+  await new Promise(resolve => scene3d.preloadItemGLBs(resolve));
   scene3d.rebuildSync();
   const captured = scene3d.captureTopDown(); // { dataUrl, cx, cz, hw2, hh } or null
+  // Restore real GLB scene after rebuildSync() snapshot
+  scene3d.markDirty();
   let imgData;
   if (captured) {
     imgData = captured.dataUrl;

@@ -273,14 +273,61 @@ const scene3d = (() => {
   }
 
   // Synchronous rebuild — bypasses the _dirty flag and animation-loop delay.
-  // Used by PDF export so the scene is guaranteed current before captureTopDown() runs.
-  // Forces skipGLB=true for ALL containers so every container uses the same BoxGeometry
-  // path — avoids mixed GLB/fallback rendering when some GLBs are cached and others aren't,
-  // which would make identical container types look different sizes in the PDF.
+  // Used by PDF export after preloadItemGLBs() has guaranteed all GLBs are in glbCache.
+  // Since glbCache hits are synchronous (clone only), _doRebuild(false) is safe here.
   function rebuildSync() {
     if (!initialized) return;
-    _doRebuild(true);
+    _doRebuild(false);
     _dirty = false;
+  }
+
+  // Ensures all GLB models for the current state.items are loaded into glbCache.
+  // glbCache hits are synchronous, so once this calls onDone(), rebuildSync() can
+  // render GLB models without any async gaps.
+  function preloadItemGLBs(onDone) {
+    const R2 = '/r2';
+    const GLB_V = '?v=3';
+    const GLB_MODELS = {
+      '140L':  `${R2}/140L.glb${GLB_V}`,
+      '240L':  `${R2}/240.glb${GLB_V}`,
+      '360L':  `${R2}/360.glb${GLB_V}`,
+      '360LG': `${R2}/360.glb${GLB_V}`,
+      '660L':  `${R2}/660L.glb${GLB_V}`,
+      '660LG': `${R2}/660L.glb${GLB_V}`,
+      '1000L': `${R2}/1000L.glb${GLB_V}`,
+      'BALEX':   `${R2}/Balex.glb${GLB_V}`,
+      'BALEX10': `${R2}/Balex.glb${GLB_V}`,
+      'ORWAK5070':   `${R2}/Orwak_Multi_5070.glb`,
+      'OW5070COMBI': `${R2}/OW5070_combi_restavfall.glb?v=9`,
+      'ENVIROPAC':   `${R2}/EnviroPac-Kjøler.glb`,
+      'APS800':      `${R2}/APS_800.glb`,
+      '800LSTATIV':  `${R2}/800l-stativ.glb`,
+      '200LFAT':     `${R2}/200L-Fat.glb`,
+      'PALL':        `${R2}/pall.glb`,
+    };
+    const containers = state.items.filter(it => it.kind === 'container' && GLB_MODELS[it.def.id]);
+    // Deduplicate by glbCache key so we don't fire multiple loads for the same file
+    const seen = new Set();
+    const unique = containers.filter(it => {
+      const def = it.def;
+      const preRotY = def.glbModelRotY || 0;
+      const hideKey = (def.glbHideMeshNames || []).join(',');
+      const key = [GLB_MODELS[def.id], preRotY, hideKey].join('|');
+      if (seen.has(key)) return false;
+      seen.add(key); return true;
+    });
+    if (unique.length === 0) { onDone(); return; }
+    let done = 0;
+    unique.forEach(it => {
+      const def = it.def;
+      const W = def.W / 1000, D = def.D / 1000, H = def.H / 1000;
+      const [glbW, glbD] = def.glbSwapWD ? [D, W] : [W, D];
+      const glb3dD = def.glb3dD || glbD;
+      loadGLB(GLB_MODELS[def.id], glbW, H, glb3dD, def.glbModelRotY || 0, () => {
+        done++;
+        if (done === unique.length) onDone();
+      }, def.glbHideMeshNames || []);
+    });
   }
 
   function _doRebuild(forceSkipGLB = false) {
@@ -306,6 +353,9 @@ const scene3d = (() => {
     const mesh = new THREE.Mesh(geo, mat(color, opts));
     return mesh;
   }
+
+  // Shorthand: set mesh position and return it, for inline use inside group.add()
+  function placed(mesh, x, y, z) { mesh.position.set(x, y, z); return mesh; }
 
   function setShadow(obj, cast = true, receive = true) {
     obj.traverse(child => {
@@ -698,8 +748,11 @@ const scene3d = (() => {
     // so their inner faces align with the polygon boundary). We only need frame half-depth + clearance.
     // WALL_THICK/2 was here before the wall-push fix (commit 0b07aec) when wi.wx/wz was the wall center.
     const wallThick = 0.002 + 0.003; // frame half-depth (0.002) + clearance from inner wall face
-    const posX = wi.wx + wi.nx * wallThick;
-    const posZ = wi.wz + wi.nz * wallThick;
+    // wallOffset slides the sign left/right along the wall surface (tangent = perpendicular to normal).
+    // Tangent of (nx, nz) is (-nz, nx). wallOffset is stored in metres.
+    const sideOffset = it.wallOffset || 0;
+    const posX = wi.wx + wi.nx * wallThick + sideOffset * (-wi.nz);
+    const posZ = wi.wz + wi.nz * wallThick + sideOffset * wi.nx;
     group.position.set(posX, mountH, posZ);
     group.lookAt(posX + wi.nx, mountH, posZ + wi.nz);
 
@@ -1078,21 +1131,62 @@ const scene3d = (() => {
       const frameH = isDoor ? 2.1 : 1.1;
       const floorY = isDoor ? 0 : 0.9; // windows raised off floor
       const g = new THREE.Group();
-      const frame = box(W, frameH, 0.06, isDoor ? 0x8b6520 : 0x4a7fa8);
-      frame.position.set(0, floorY + frameH/2, 0);
-      g.add(frame);
-      if (!isDoor) {
-        // Window glass pane
+      if (isDoor) {
+        // Detailed door: frame (top + side stiles) + leaf with panel + handle
+        const FRAME_W = 0.06;   // stile/rail width
+        const FRAME_T = 0.10;   // frame depth (matches wall thickness feel)
+        const DOOR_T  = 0.045;  // door leaf thickness
+        const FRAME_C = 0x4a3d30;  // dark warm-brown frame
+        const LEAF_C  = 0x6b5d4f;  // slightly lighter door leaf
+        const HANDLE_C = 0xb8b8b8; // silver handle
+
+        const halves = def.double ? 2 : 1;
+        const leafW = (W - FRAME_W * (halves + 1)) / halves;
+
+        // Top rail
+        g.add(placed(box(W, FRAME_W, FRAME_T, FRAME_C), 0, frameH - FRAME_W / 2, 0));
+        // Left stile
+        g.add(placed(box(FRAME_W, frameH, FRAME_T, FRAME_C), -W / 2 + FRAME_W / 2, frameH / 2, 0));
+        // Right stile
+        g.add(placed(box(FRAME_W, frameH, FRAME_T, FRAME_C),  W / 2 - FRAME_W / 2, frameH / 2, 0));
+        if (def.double) {
+          // Centre stile for double door
+          g.add(placed(box(FRAME_W, frameH, FRAME_T, FRAME_C), 0, frameH / 2, 0));
+        }
+
+        for (let i = 0; i < halves; i++) {
+          const lx = -W / 2 + FRAME_W + leafW / 2 + i * (leafW + FRAME_W);
+          const leafH = frameH - FRAME_W;
+          const leafZ = -FRAME_T / 2 + DOOR_T / 2;
+
+          // Door leaf
+          g.add(placed(box(leafW, leafH, DOOR_T, LEAF_C), lx, leafH / 2, leafZ));
+
+          // Inset panel (recessed rectangle for visual depth)
+          const pw = leafW * 0.68, ph = leafH * 0.58;
+          g.add(placed(box(pw, ph, 0.006, 0x3a2e24), lx, leafH / 2, leafZ + DOOR_T / 2 + 0.001));
+
+          // Handle — offset toward the opening edge
+          const openEdge = (def.double && i === 0) ? 1 : -1;
+          const hx = lx + openEdge * leafW * 0.32;
+          g.add(placed(box(0.018, 0.115, 0.028, HANDLE_C), hx, 1.05, leafZ + DOOR_T / 2 + 0.028));
+        }
+      } else {
+        // Window: simple coloured frame
+        const frame = box(W, frameH, 0.06, 0x4a7fa8);
+        frame.position.set(0, floorY + frameH / 2, 0);
+        g.add(frame);
+        // Glass pane
         const glassMat = new THREE.MeshLambertMaterial({ color: 0xd4eaf7, transparent: true, opacity: 0.55 });
-        const glass = new THREE.Mesh(new THREE.BoxGeometry(W*0.88, frameH*0.82, 0.02), glassMat);
-        glass.position.set(0, floorY + frameH/2, 0.02);
+        const glass = new THREE.Mesh(new THREE.BoxGeometry(W * 0.88, frameH * 0.82, 0.02), glassMat);
+        glass.position.set(0, floorY + frameH / 2, 0.02);
         g.add(glass);
-        // Window cross bars
+        // Cross bars
         const barMat = new THREE.MeshLambertMaterial({ color: 0x3a6080 });
-        const hBar = new THREE.Mesh(new THREE.BoxGeometry(W*0.88, 0.03, 0.03), barMat);
-        hBar.position.set(0, floorY + frameH/2, 0.02); g.add(hBar);
-        const vBar = new THREE.Mesh(new THREE.BoxGeometry(0.03, frameH*0.82, 0.03), barMat);
-        vBar.position.set(0, floorY + frameH/2, 0.02); g.add(vBar);
+        const hBar = new THREE.Mesh(new THREE.BoxGeometry(W * 0.88, 0.03, 0.03), barMat);
+        hBar.position.set(0, floorY + frameH / 2, 0.02); g.add(hBar);
+        const vBar = new THREE.Mesh(new THREE.BoxGeometry(0.03, frameH * 0.82, 0.03), barMat);
+        vBar.position.set(0, floorY + frameH / 2, 0.02); g.add(vBar);
       }
       g.position.set(cx, 0, cz);
       g.rotation.y = -rot;
@@ -1181,5 +1275,43 @@ const scene3d = (() => {
     return { dataUrl, cx, cz, hw2, hh };
   }
 
-  return { init, rebuild, rebuildSync, setAngle, resize, markDirty, nudgeSkilt, captureTopDown, get _initialized() { return initialized; } };
+  // Preload all unique GLB files into the browser HTTP cache using fetch().
+  // Deliberately does NOT use loadGLB/glbCache — loadGLB caches models post-scaling,
+  // so preloading with dummy dimensions would corrupt the cache for real placements.
+  // fetch() just warms the browser cache; when loadGLB runs later it reads from disk
+  // (fast) and scales correctly with the real dimensions from DEFS.
+  function preloadAll(onProgress, onDone) {
+    const R2 = '/r2';
+    const GLB_V = '?v=3';
+    // Unique GLB file URLs only — skip duplicates (e.g. 360LG reuses 360.glb)
+    const urls = [
+      `${R2}/140L.glb${GLB_V}`,
+      `${R2}/240.glb${GLB_V}`,
+      `${R2}/360.glb${GLB_V}`,
+      `${R2}/660L.glb${GLB_V}`,
+      `${R2}/1000L.glb${GLB_V}`,
+      `${R2}/Balex.glb${GLB_V}`,
+      `${R2}/Orwak_Multi_5070.glb`,
+      `${R2}/OW5070_combi_restavfall.glb?v=9`,
+      `${R2}/EnviroPac-Kjøler.glb`,
+      `${R2}/APS_800.glb`,
+      `${R2}/800l-stativ.glb`,
+      `${R2}/200L-Fat.glb`,
+      `${R2}/pall.glb`,
+    ];
+    const total = urls.length;
+    let loaded = 0;
+    urls.forEach(url => {
+      fetch(url)
+        .then(r => { if (!r.ok) console.warn('GLB preload failed:', url, r.status); })
+        .catch(err => console.warn('GLB preload error:', url, err))
+        .finally(() => {
+          loaded++;
+          if (onProgress) onProgress(loaded, total);
+          if (loaded === total && onDone) onDone();
+        });
+    });
+  }
+
+  return { init, rebuild, rebuildSync, preloadItemGLBs, setAngle, resize, markDirty, nudgeSkilt, captureTopDown, preloadAll, get _initialized() { return initialized; } };
 })();

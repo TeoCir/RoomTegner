@@ -5,7 +5,8 @@ from fastapi.templating import Jinja2Templates
 from starlette.middleware.base import BaseHTTPMiddleware
 from pydantic import BaseModel
 from typing import Optional
-import sqlite3, json, os, uuid, urllib.request, urllib.parse
+import sqlite3, json, os, uuid, urllib.parse
+import httpx
 from datetime import datetime, timezone
 from pathlib import Path
 from dotenv import load_dotenv
@@ -128,26 +129,31 @@ _r2_cache: dict = {}
 R2_CACHE_MAX = 200
 
 @app.get("/r2/{filename}")
-def proxy_r2(filename: str, v: str = ""):
+async def proxy_r2(filename: str, v: str = ""):
     # v is a cache-bust query param (e.g. ?v=2) — included in cache key so that
     # bumping v forces a fresh fetch from R2, bypassing both this cache and the CDN.
     cache_key = f"{filename}:{v}"
+    # Assets are immutable for a given v= param — cache aggressively in the browser.
+    # Bumping v= in the frontend forces a fresh fetch, bypassing both this cache and the browser.
+    cache_headers = {"Cache-Control": "public, max-age=86400"}
     if cache_key in _r2_cache:
         data, content_type = _r2_cache[cache_key]
-        return Response(content=data, media_type=content_type)
+        return Response(content=data, media_type=content_type, headers=cache_headers)
     # Percent-encode the filename so non-ASCII chars (e.g. Norwegian ø in EnviroPac-Kjøler.glb)
     # survive the HTTP request to R2. urllib does not encode Unicode automatically.
     url = f"{R2_BASE}/{urllib.parse.quote(filename)}"
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            data = resp.read()
-            content_type = resp.headers.get("Content-Type", "application/octet-stream")
+        # async httpx so a slow R2 fetch never blocks the FastAPI event loop for other requests
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(url, headers={"User-Agent": "Mozilla/5.0"})
+            resp.raise_for_status()
+            data = resp.content
+            content_type = resp.headers.get("content-type", "application/octet-stream")
     except Exception:
         raise HTTPException(404, "Not found")
     if len(_r2_cache) < R2_CACHE_MAX:
         _r2_cache[cache_key] = (data, content_type)
-    return Response(content=data, media_type=content_type)
+    return Response(content=data, media_type=content_type, headers=cache_headers)
 
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 

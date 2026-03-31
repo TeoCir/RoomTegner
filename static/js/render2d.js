@@ -396,29 +396,6 @@ function render2D() {
     });
   }
 
-  // ── Scale bar ────────────────────────────────────────────────────────
-  const scBarPpm = getPPM();
-  let scaleM = 1;
-  if (scBarPpm < 30) scaleM = 5;
-  else if (scBarPpm < 60) scaleM = 2;
-  const barPx = scaleM * scBarPpm;
-  const sx = 16, sy = H - 28;
-  ctx.fillStyle = 'rgba(255,255,255,0.88)';
-  ctx.beginPath(); ctx.roundRect(sx - 4, sy - 6, barPx + 40, 22, 4); ctx.fill();
-  // Bar
-  ctx.strokeStyle = '#444'; ctx.lineWidth = 2;
-  ctx.beginPath(); ctx.moveTo(sx, sy + 8); ctx.lineTo(sx + barPx, sy + 8); ctx.stroke();
-  // End ticks
-  [[sx, sy+2],[sx + barPx, sy+2]].forEach(([tx, ty]) => {
-    ctx.beginPath(); ctx.moveTo(tx, ty); ctx.lineTo(tx, ty+12); ctx.stroke();
-  });
-  // Mid tick
-  ctx.lineWidth = 1; ctx.strokeStyle = '#888';
-  ctx.beginPath(); ctx.moveTo(sx + barPx/2, sy+4); ctx.lineTo(sx + barPx/2, sy+12); ctx.stroke();
-  // Label
-  ctx.fillStyle = '#1c1a18'; ctx.font = 'bold 11px Inter,sans-serif';
-  ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
-  ctx.fillText(`${scaleM} m`, sx + barPx/2, sy + 1);
 }
 
 function floorPath(ctx) {
@@ -778,6 +755,13 @@ function drawSkilt2D(ctx, isSel, it) {
     ctx.strokeStyle = NG_ORANGE; ctx.lineWidth = 1.5; ctx.setLineDash([4,3]);
     ctx.beginPath(); ctx.rect(-sz/2-6, -sz/2-6, sz+12, sz+12); ctx.stroke();
     ctx.setLineDash([]);
+    // Height label above the selection box
+    const h = it.wallH !== undefined ? it.wallH : 1.6;
+    const hlbl = 'H: ' + h.toFixed(2) + ' m';
+    ctx.font = 'bold 9px Inter,sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    const tw = ctx.measureText(hlbl).width + 8;
+    ctx.fillStyle = NG_ORANGE; ctx.beginPath(); ctx.roundRect(-tw/2, -sz/2-22, tw, 14, 3); ctx.fill();
+    ctx.fillStyle = '#fff'; ctx.fillText(hlbl, 0, -sz/2-15);
   }
 }
 

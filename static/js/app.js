@@ -210,10 +210,11 @@ function placePendingSkiltOnContainer(container) {
   // Remove any existing linked skilt for this container
   state.items = state.items.filter(s => !(s.kind === 'skilt' && s._linkedTo === container.id));
   const skiltSizeM = Math.min(Math.max((container.def.W / 1000) * 0.70, 0.25), 0.65);
+  const skiltH = binH > (1.6 - skiltSizeM / 2) ? binH + skiltSizeM / 2 + 0.05 : 1.6;
   state.items.push({
     id: state.nextId++, typeId: ps.id, kind: 'skilt',
     def: ps.def, x: container.x, y: container.y, rot: 0, size: skiltSizeM,
-    wallH: binH + 0.35, wallOffset: 0,
+    wallH: skiltH, wallOffset: 0,
     _linkedTo: container.id,
     _wallNx: w ? w.nx : 0, _wallNy: w ? w.ny : -1,
     _wallX:  w ? w.wallX : container.x, _wallY: w ? w.wallY : container.y,
@@ -1395,10 +1396,12 @@ function checkAutoSkilt(it) {
   // Sign size scales with container width: ~70% of bin width, clamped 0.25–0.65m.
   // Small bins (140L=480mm → 0.34m sign) get smaller labels so they don't dwarf the container.
   const skiltSize = Math.min(Math.max((it.def.W / 1000) * 0.70, 0.25), 0.65);
+  // Standard mounting height: 1.6m (center). Raise if machine top is above sign bottom.
+  const autoSkiltH = binH > (1.6 - skiltSize / 2) ? binH + skiltSize / 2 + 0.05 : 1.6;
   state.items.push({
     id: state.nextId++, typeId: skiltId, kind: 'skilt',
     def, x: it.x, y: it.y, rot: 0, size: skiltSize,
-    wallH: binH + 0.4, wallOffset: 0,
+    wallH: autoSkiltH, wallOffset: 0,
     _linkedTo: it.id,
     _wallNx: w.nx, _wallNy: w.ny,
     _wallX: w.wallX, _wallY: w.wallY,

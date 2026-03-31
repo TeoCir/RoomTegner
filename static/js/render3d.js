@@ -298,6 +298,7 @@ const scene3d = (() => {
       'BALEX':     `${R2}/Balex.glb${GLB_V}`,
       'BALEX10':   `${R2}/Balex.glb${GLB_V}`,
       'ORWAK3420': `${R2}/orwak_3420.glb?v=2`,
+      'KOMP400L':  `${R2}/400L_komp.glb`,
       'ORWAK5070':   `${R2}/Orwak_Multi_5070.glb`,
       'OW5070COMBI': `${R2}/OW5070_combi_restavfall.glb?v=9`,
       'ENVIROPAC':   `${R2}/EnviroPac-Kjøler.glb`,
@@ -702,11 +703,16 @@ const scene3d = (() => {
     const sz = it.size || 0.65;
     let mountH = it.wallH;
     if (mountH === undefined) {
-      // Fallback: compute from linked container height
+      // Fallback: standard 1.6m center height, raised if linked container top overlaps sign bottom
       const linked = it._linkedTo !== undefined
         ? state.items.find(c => c.kind === 'container' && c.id === it._linkedTo)
         : null;
-      mountH = linked ? linked.def.H / 1000 + 0.4 : 1.6;
+      if (linked) {
+        const binH = linked.def.H / 1000;
+        mountH = binH > (1.6 - sz / 2) ? binH + sz / 2 + 0.05 : 1.6;
+      } else {
+        mountH = 1.6;
+      }
     }
     // Prefer wall info stored at placement time over live recomputation.
     // _wallNy (canvas Y, down) maps to Three.js Z — stored as nz here.
@@ -797,6 +803,7 @@ const scene3d = (() => {
       'BALEX':     `${R2}/Balex.glb${GLB_V}`,
       'BALEX10':   `${R2}/Balex.glb${GLB_V}`,
       'ORWAK3420': `${R2}/orwak_3420.glb?v=2`,
+      'KOMP400L':  `${R2}/400L_komp.glb`,
       // Machines — GLBs with baked textures (no material replacement; see texture-preserve branch below)
       'ORWAK5070':   `${R2}/Orwak_Multi_5070.glb`,
       'OW5070COMBI': `${R2}/OW5070_combi_restavfall.glb?v=9`,
@@ -831,7 +838,7 @@ const scene3d = (() => {
           console.groupEnd();
         }
 
-        if (def.type === 'compactor' || def.type === 'machine') {
+        if (def.type === 'compactor' || def.type === 'machine' || def.glbKeepMat) {
           // GLBs with baked textures — preserve albedo map (map) so the texture shows,
           // but strip metalness/roughness maps and force fully matte PBR values.
           // metalnessMap/roughnessMap in the GLB override scalar values and cause
@@ -1225,7 +1232,7 @@ const scene3d = (() => {
     const it = state.items.find(i => i.id === id && i.kind === 'skilt');
     if (!it) return;
     const step = 0.05;
-    if (it.wallH === undefined) it.wallH = 1.5;
+    if (it.wallH === undefined) it.wallH = 1.6;
     if (it.wallOffset === undefined) it.wallOffset = 0;
     if (dir === 'up')    it.wallH      += step;
     if (dir === 'down')  it.wallH      = Math.max(0.05, it.wallH - step);

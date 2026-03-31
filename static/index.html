@@ -252,11 +252,19 @@
 <script src="/static/js/three.min.js"></script>
 <script src="/static/js/GLTFLoader.js"></script>
 <script src="/static/js/jspdf.umd.min.js"></script>
-<script src="/static/js/data.js"></script>
-<script src="/static/js/state.js"></script>
-<script src="/static/js/render2d.js"></script>
-<script src="/static/js/render3d.js"></script>
-<script src="/static/js/api.js"></script>
-<script src="/static/js/app.js"></script>
+<script src="/static/js/data.js?v=4"></script>
+<script src="/static/js/state.js?v=4"></script>
+<script src="/static/js/render2d.js?v=4"></script>
+<script src="/static/js/render3d.js?v=4"></script>
+<script src="/static/js/api.js?v=4"></script>
+<script src="/static/js/app.js?v=4"></script>
+<!-- Arrow-key exact-length input — shown near last poly point during free drawing -->
+<div id="arrow-input" style="display:none;position:fixed;z-index:300;">
+  <div class="arrow-input-box">
+    <span id="arrow-input-label">→ Lengde (m)</span>
+    <input type="number" id="arrow-input-field" min="0.1" step="0.1" placeholder="4.5">
+  </div>
+</div>
+
 </body>
 </html>

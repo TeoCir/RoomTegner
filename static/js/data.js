@@ -4,8 +4,9 @@ const DEFS = [
   {id:'360L',  name:'360L',       sap:'B-0360',  W:625,  D:850,  H:1100, type:'bin',             wheels:2},
   {id:'660L',  name:'660L',       sap:'B-0660',  W:1360, D:770,  H:1180, type:'bin-large',       wheels:4},
   {id:'1000L', name:'1000L',      sap:'B-1000',  W:1320, D:1080, H:1320, type:'bin-xl',          wheels:4},
-  {id:'BALEX',   name:'Balex 20',    sap:'', W:1840, D:1100, H:1950, type:'compactor', wheels:0},
-  {id:'BALEX10', name:'Balex 10',    sap:'', W:1360, D:840,  H:1920, type:'compactor', wheels:0},
+  {id:'BALEX',     name:'Balex 20',    sap:'', W:1840, D:1100, H:1950, type:'compactor', wheels:0},
+  {id:'BALEX10',   name:'Balex 10',    sap:'', W:1360, D:840,  H:1920, type:'compactor', wheels:0},
+  {id:'ORWAK3420', name:'Orwak 3420',  sap:'', W:1775, D:1060, H:2380, type:'machine', wheels:0, glbModelRotY: -Math.PI / 2, defaultRot: Math.PI},
   {id:'BUR',   name:'Bur',        sap:'B-0B-E',  W:1600, D:1200, H:1200, type:'cage',            wheels:4},
   // type:'machine' — GLB with baked textures; materials are NOT replaced in buildContainer
   {id:'ORWAK5070',   name:'Orwak Multi 5070',  sap:'', W:1740, D:880, H:2160, type:'machine', wheels:0},
@@ -16,6 +17,7 @@ const DEFS = [
   {id:'ENVIROPAC',   name:'EnviroPac Kjøler',   sap:'', W:965,  D:853, H:1475, type:'machine', wheels:0},
   {id:'APS800',      name:'APS 800',            sap:'', W:1150, D:1574, H:2360, type:'machine', wheels:0},
   {id:'800LSTATIV',  name:'800L Stativ',         sap:'', W:700,  D:700,  H:1510, type:'machine', wheels:0, glbModelRotY: Math.PI / 2},
+  {id:'60LFAT',      name:'60L Fat',             sap:'', W:400,  D:400,  H:628,  type:'machine', wheels:0},
   {id:'200LFAT',     name:'200L Fat',            sap:'', W:585,  D:585,  H:880,  type:'machine', wheels:0},
   {id:'PALL',        name:'Europall',            sap:'', W:800,  D:1200, H:144,  type:'machine', wheels:0, defaultRot: Math.PI / 2},
 ];
@@ -41,6 +43,9 @@ const FRAKSJONER = [
   { id: 'eps',        label: 'EPS',                       color: '#e0e0e0', lidColor: '#bdbdbd', textColor: '#222' },
   { id: 'farlig',     label: 'Farlig avfall',             color: '#b71c1c', lidColor: '#7f0000', textColor: '#fff' },
   { id: 'ee',         label: 'EE-avfall',                 color: '#4a148c', lidColor: '#311b92', textColor: '#fff' },
+  { id: 'batterier',  label: 'Batterier',                 color: '#f9a825', lidColor: '#f57f17', textColor: '#222' },
+  { id: 'lysstoffror',label: 'Lysstoffrør',               color: '#80deea', lidColor: '#4dd0e1', textColor: '#222' },
+  { id: 'tonerkassett',label:'Tonerkassett',              color: '#424242', lidColor: '#212121', textColor: '#fff' },
 ];
 
 function getFraksjon(id) {
@@ -62,6 +67,9 @@ const SKILT_DEFS = [
   { id: 'sk-eps',        name: 'EPS',                       url: `${R2}/EPS_web.png`,                    iconUrl: `${R2}/EPS_web.png`                    },
   { id: 'sk-farlig',     name: 'Farlig avfall',             url: `${R2}/Farlig_avfall_web.png`,          iconUrl: `${R2}/Farlig_avfall_web.png`          },
   { id: 'sk-ee',         name: 'EE-avfall',                 url: `${R2}/Elektronikk_web.png`,            iconUrl: `${R2}/Elektronikk_web.png`            },
+  { id: 'sk-batterier',    name: 'Batterier',               url: `${R2}/Batterier_web.png`,              iconUrl: `${R2}/Batterier_web.png`              },
+  { id: 'sk-lysstoffror',  name: 'Lysstoffrør',             url: `${R2}/Lysstoffror_web.png`,            iconUrl: `${R2}/Lysstoffror_web.png`            },
+  { id: 'sk-tonerkassett', name: 'Tonerkassett',            url: `${R2}/Tonerkassett_web.png`,           iconUrl: `${R2}/Tonerkassett_web.png`           },
 ];
 
 const NG_ORANGE = '#E8521A';

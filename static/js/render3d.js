@@ -305,6 +305,7 @@ const scene3d = (() => {
       '800LSTATIV':  `${R2}/800l-stativ.glb`,
       '60LFAT':      `${R2}/60L_fat.glb`,
       '200LFAT':     `${R2}/200L-Fat.glb`,
+      '200LSEKKE':   `${R2}/200L_sekkestativ.glb`,
       'PALL':        `${R2}/pall.glb`,
     };
     const containers = state.items.filter(it => it.kind === 'container' && GLB_MODELS[it.def.id]);
@@ -581,6 +582,8 @@ const scene3d = (() => {
     'sk-tonerkassett': { label: 'Tonerkassett',            r2: 'Tonerkassett_web.png'           },
     'sk-frityrolje':   { label: 'Frityrolje',              r2: 'Frityrolje_web.png'             },
     'sk-porselen':     { label: 'Porselen',                r2: 'Porselen_web.png'               },
+    'sk-lysparer':     { label: 'Lyspærer',                r2: 'Lysparer_web.png'               },
+    'sk-spraybokser':  { label: 'Spraybokser',             r2: 'Spraybokser_web.png'            },
   };
 
   function makeSkiltTexture(typeId) {
@@ -801,6 +804,7 @@ const scene3d = (() => {
       '800LSTATIV':  `${R2}/800l-stativ.glb`,
       '60LFAT':      `${R2}/60L_fat.glb`,
       '200LFAT':     `${R2}/200L-Fat.glb`,
+      '200LSEKKE':   `${R2}/200L_sekkestativ.glb`,
       'PALL':        `${R2}/pall.glb`,
     };
 
@@ -1308,6 +1312,7 @@ const scene3d = (() => {
       `${R2}/200L-Fat.glb`,
       `${R2}/pall.glb`,
       `${R2}/60L_fat.glb`,
+      `${R2}/200L_sekkestativ.glb`,
       `${R2}/orwak_3420.glb?v=2`,
     ];
     const total = urls.length;

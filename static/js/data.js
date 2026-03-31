@@ -18,6 +18,7 @@ const DEFS = [
   {id:'APS800',      name:'APS 800',            sap:'', W:1150, D:1574, H:2360, type:'machine', wheels:0},
   {id:'800LSTATIV',  name:'800L Stativ',         sap:'', W:700,  D:700,  H:1510, type:'machine', wheels:0, glbModelRotY: Math.PI / 2},
   {id:'60LFAT',      name:'60L Fat',             sap:'', W:400,  D:400,  H:628,  type:'machine', wheels:0},
+  {id:'200LSEKKE',   name:'200L Sekkestativ',    sap:'', W:400,  D:400,  H:1100, type:'machine', wheels:0},
   {id:'200LFAT',     name:'200L Fat',            sap:'', W:585,  D:585,  H:880,  type:'machine', wheels:0},
   {id:'PALL',        name:'Europall',            sap:'', W:800,  D:1200, H:144,  type:'machine', wheels:0, defaultRot: Math.PI / 2},
 ];
@@ -48,6 +49,8 @@ const FRAKSJONER = [
   { id: 'tonerkassett',label:'Tonerkassett',              color: '#424242', lidColor: '#212121', textColor: '#fff' },
   { id: 'frityrolje',  label: 'Frityrolje',               color: '#ff8f00', lidColor: '#e65100', textColor: '#fff' },
   { id: 'porselen',    label: 'Porselen',                  color: '#90a4ae', lidColor: '#607d8b', textColor: '#fff' },
+  { id: 'lysparer',    label: 'Lyspærer',                  color: '#fff176', lidColor: '#f9a825', textColor: '#222' },
+  { id: 'spraybokser', label: 'Spraybokser',               color: '#ef9a9a', lidColor: '#c62828', textColor: '#fff' },
 ];
 
 function getFraksjon(id) {
@@ -74,6 +77,8 @@ const SKILT_DEFS = [
   { id: 'sk-tonerkassett', name: 'Tonerkassett',            url: `${R2}/Tonerkassett_web.png`,           iconUrl: `${R2}/Tonerkassett_web.png`           },
   { id: 'sk-frityrolje',  name: 'Frityrolje',              url: `${R2}/Frityrolje_web.png`,             iconUrl: `${R2}/Frityrolje_web.png`             },
   { id: 'sk-porselen',    name: 'Porselen',                url: `${R2}/Porselen_web.png`,               iconUrl: `${R2}/Porselen_web.png`               },
+  { id: 'sk-lysparer',    name: 'Lyspærer',                url: `${R2}/Lysparer_web.png`,               iconUrl: `${R2}/Lysparer_web.png`               },
+  { id: 'sk-spraybokser', name: 'Spraybokser',             url: `${R2}/Spraybokser_web.png`,            iconUrl: `${R2}/Spraybokser_web.png`            },
 ];
 
 const NG_ORANGE = '#E8521A';

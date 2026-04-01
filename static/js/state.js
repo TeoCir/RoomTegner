@@ -2,7 +2,7 @@ const state = {
   view: '2d',
   tool: 'move',
   roomMode: 'free',
-  roomW: 6, roomD: 4, roomH: 2.8,
+  roomW: 6, roomD: 4, roomH: 3.3,
   // Wall-builder mode (replaces freehand)
   poly: [], polyDone: false, polyDraw: false,
   polyOriginX: null, polyOriginY: null,

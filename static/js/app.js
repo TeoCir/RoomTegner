@@ -444,12 +444,30 @@ function _placePendingContainer(keepActive) {
 
 function addWallEl(typeId) {
   const def = WALL_EL_DEFS[typeId]; if (!def) return;
-  const kind = typeId === 'exit' ? 'exit' : 'wall';
-  const cx = state.roomMode === 'rect' ? state.roomW / 2 : centroid('x');
-  const cy = state.roomMode === 'rect' ? state.roomD / 2 : centroid('y');
-  const it = { id: state.nextId++, kind, typeId, def, x: cx, y: cy, rot: 0 };
+  // Enter floating placement mode — same UX as addContainer.
+  // Left click = place once; right click = place and keep floating.
+  state.pendingWallEl = { typeId, def };
+  state._pendingWallElPos = null;
+  document.getElementById('canvas-2d').style.cursor = 'crosshair';
+  setInfo('Venstreklikk = plasser · Høyreklikk = plasser og fortsett · Esc = avbryt');
+  render();
+}
+
+function _placePendingWallEl(keepActive) {
+  const pw = state.pendingWallEl; if (!pw) return;
+  const pos = state._pendingWallElPos;
+  if (!pos) { if (!keepActive) { state.pendingWallEl = null; _restoreCursor(); setInfo(''); } return; }
+  const kind = pw.typeId === 'exit' ? 'exit' : 'wall';
+  const it = {
+    id: state.nextId++, kind, typeId: pw.typeId, def: pw.def,
+    x: pos.x, y: pos.y, rot: pos.rot || 0,
+    _outNx: pos.outNx || 0, _outNy: pos.outNy || 0,
+  };
   state.items.push(it); state.sel = it.id;
-  updateDP(); render();
+  updateDP();
+  if (!keepActive) { state.pendingWallEl = null; state._pendingWallElPos = null; _restoreCursor(); setInfo(''); }
+  render();
+  if (state.view === '3d' && scene3d._initialized) scene3d.rebuild();
 }
 
 function addNote() {
@@ -604,6 +622,16 @@ function setupEvents() {
       updateLinkedSkiltWall(rotated);
       render();
     }
+    // Auto-align wall elements to the nearest wall on drop, same as containers,
+    // and store the outward normal so render3d can center them in the wall thickness.
+    if (dragged && dragged.kind === 'wall') {
+      const w = nearestWall(dragged.x, dragged.y);
+      if (w) {
+        dragged.rot   = Math.atan2(w.nx, -w.ny);
+        dragged._outNx = -w.nx; dragged._outNy = -w.ny;
+      }
+      updateDP(); render();
+    }
   });
   c.addEventListener('dblclick', onDbl);
   document.addEventListener('keydown', onKey);
@@ -737,6 +765,21 @@ function onMD(e) {
       _placePendingContainer(false); return;
     }
     if (e.button === 2) { e.preventDefault(); _placePendingContainer(true); return; }
+    return;
+  }
+
+  // Floating wall element (door/window) placement — mirrors pendingContainer logic.
+  if (state.pendingWallEl) {
+    if (e.button === 0) {
+      const existingHit = [...state.items].reverse().find(it => it.kind !== 'skilt' && hitTest(it, mx, my));
+      if (existingHit) {
+        state.pendingWallEl = null; state._pendingWallElPos = null;
+        _restoreCursor(); setInfo('');
+        state.sel = existingHit.id; updateDP(); render(); return;
+      }
+      _placePendingWallEl(false); return;
+    }
+    if (e.button === 2) { e.preventDefault(); _placePendingWallEl(true); return; }
     return;
   }
 
@@ -943,6 +986,17 @@ function onMM(e) {
     state._pendingContainerPos = { x: pos.x, y: pos.y, rot };
     scheduleRender2D(); return;
   }
+  // Floating wall element: snap center to nearest wall and auto-rotate.
+  if (state.pendingWallEl) {
+    const { rx, ry } = c2r(mx, my);
+    const w = nearestWall(rx, ry);
+    let pos = { x: rx, y: ry, rot: 0, outNx: 0, outNy: 0 };
+    if (w && w.dist < 1.5) {
+      pos = { x: w.wallX, y: w.wallY, rot: Math.atan2(w.nx, -w.ny), outNx: -w.nx, outNy: -w.ny };
+    }
+    state._pendingWallElPos = pos;
+    scheduleRender2D(); return;
+  }
   // Pending skilt: highlight hovered container
   if (state.pendingSkilt) {
     const { ox, oy } = getO(); const ppm = getPPM();
@@ -1035,6 +1089,10 @@ function onKey(e) {
   if (e.key === 'Escape') {
     if (state.pendingContainer) {
       state.pendingContainer = null; state._pendingContainerPos = null;
+      _restoreCursor(); setInfo(''); render(); return;
+    }
+    if (state.pendingWallEl) {
+      state.pendingWallEl = null; state._pendingWallElPos = null;
       _restoreCursor(); setInfo(''); render(); return;
     }
     if (state.tool === 'innerwall' && state.innerWallStart) {

@@ -341,6 +341,20 @@ function render2D() {
     ctx.restore();
   }
 
+  if (state.pendingWallEl && state._pendingWallElPos && !state._pdfExporting) {
+    const def = state.pendingWallEl.def;
+    const ppm = getPPM();
+    const pos = state._pendingWallElPos;
+    const px = ox + pos.x * ppm, py = oy + pos.y * ppm;
+    const bw = (def.W / 1000) * ppm, bd = (def.D / 1000) * ppm;
+    ctx.save();
+    ctx.globalAlpha = 0.55;
+    ctx.translate(px, py);
+    ctx.rotate(pos.rot || 0);
+    drawWallEl2D(ctx, bw, bd, false, { def });
+    ctx.restore();
+  }
+
   // ── Stykkliste (live) + Scale bar ────────────────────────────────────
   // Skipped during PDF export: both are re-rendered as proper PDF elements
   // by generatePDF(). Showing them in the canvas snapshot would double-render

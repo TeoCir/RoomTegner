@@ -1175,66 +1175,45 @@ const scene3d = (() => {
     if (def.type === 'door' || def.type === 'window') {
       const isDoor = def.type === 'door';
       const frameH = isDoor ? 2.1 : 1.1;
-      const floorY = isDoor ? 0 : 0.9; // windows raised off floor
+      const floorY = isDoor ? 0 : 0.9;
       const g = new THREE.Group();
+
+      // All geometry uses WALL_THICK as depth so elements span the full wall.
+      // DoubleSide makes them visible from inside and outside the room.
+      // _outNx/_outNy (stored on mouseup) lets us offset the group to the wall center.
+      const frameSide = new THREE.MeshLambertMaterial({ color: 0x4a3d30, side: THREE.DoubleSide });
+      const openMat   = new THREE.MeshLambertMaterial({ color: 0xc8c4be, transparent: true, opacity: 0.10, side: THREE.DoubleSide, depthWrite: false });
+
       if (isDoor) {
-        // Detailed door: frame (top + side stiles) + leaf with panel + handle
-        const FRAME_W = 0.06;   // stile/rail width
-        const FRAME_T = 0.10;   // frame depth (matches wall thickness feel)
-        const DOOR_T  = 0.045;  // door leaf thickness
-        const FRAME_C = 0x4a3d30;  // dark warm-brown frame
-        const LEAF_C  = 0x6b5d4f;  // slightly lighter door leaf
-        const HANDLE_C = 0xb8b8b8; // silver handle
+        const FRAME_W = 0.06;
+        const halves  = def.double ? 2 : 1;
+        const leafW   = (W - FRAME_W * (halves + 1)) / halves;
+        const leafH   = frameH - FRAME_W;
 
-        const halves = def.double ? 2 : 1;
-        const leafW = (W - FRAME_W * (halves + 1)) / halves;
+        // Frame: top rail + side stiles (+ centre stile for double door)
+        g.add(placed(new THREE.Mesh(new THREE.BoxGeometry(W,            FRAME_W, WALL_THICK), frameSide.clone()), 0,                    frameH - FRAME_W / 2, 0));
+        g.add(placed(new THREE.Mesh(new THREE.BoxGeometry(FRAME_W,      frameH,  WALL_THICK), frameSide.clone()), -W / 2 + FRAME_W / 2, frameH / 2,           0));
+        g.add(placed(new THREE.Mesh(new THREE.BoxGeometry(FRAME_W,      frameH,  WALL_THICK), frameSide.clone()),  W / 2 - FRAME_W / 2, frameH / 2,           0));
+        if (def.double) g.add(placed(new THREE.Mesh(new THREE.BoxGeometry(FRAME_W, frameH, WALL_THICK), frameSide.clone()), 0, frameH / 2, 0));
 
-        // Top rail
-        g.add(placed(box(W, FRAME_W, FRAME_T, FRAME_C), 0, frameH - FRAME_W / 2, 0));
-        // Left stile
-        g.add(placed(box(FRAME_W, frameH, FRAME_T, FRAME_C), -W / 2 + FRAME_W / 2, frameH / 2, 0));
-        // Right stile
-        g.add(placed(box(FRAME_W, frameH, FRAME_T, FRAME_C),  W / 2 - FRAME_W / 2, frameH / 2, 0));
-        if (def.double) {
-          // Centre stile for double door
-          g.add(placed(box(FRAME_W, frameH, FRAME_T, FRAME_C), 0, frameH / 2, 0));
-        }
-
+        // Opening panel per leaf — very transparent, looks like open void in wall
         for (let i = 0; i < halves; i++) {
           const lx = -W / 2 + FRAME_W + leafW / 2 + i * (leafW + FRAME_W);
-          const leafH = frameH - FRAME_W;
-          const leafZ = -FRAME_T / 2 + DOOR_T / 2;
-
-          // Door leaf
-          g.add(placed(box(leafW, leafH, DOOR_T, LEAF_C), lx, leafH / 2, leafZ));
-
-          // Inset panel (recessed rectangle for visual depth)
-          const pw = leafW * 0.68, ph = leafH * 0.58;
-          g.add(placed(box(pw, ph, 0.006, 0x3a2e24), lx, leafH / 2, leafZ + DOOR_T / 2 + 0.001));
-
-          // Handle — offset toward the opening edge
-          const openEdge = (def.double && i === 0) ? 1 : -1;
-          const hx = lx + openEdge * leafW * 0.32;
-          g.add(placed(box(0.018, 0.115, 0.028, HANDLE_C), hx, 1.05, leafZ + DOOR_T / 2 + 0.028));
+          g.add(placed(new THREE.Mesh(new THREE.BoxGeometry(leafW, leafH, WALL_THICK), openMat.clone()), lx, leafH / 2, 0));
         }
       } else {
-        // Window: simple coloured frame
-        const frame = box(W, frameH, 0.06, 0x4a7fa8);
-        frame.position.set(0, floorY + frameH / 2, 0);
-        g.add(frame);
-        // Glass pane
-        const glassMat = new THREE.MeshLambertMaterial({ color: 0xd4eaf7, transparent: true, opacity: 0.55 });
-        const glass = new THREE.Mesh(new THREE.BoxGeometry(W * 0.88, frameH * 0.82, 0.02), glassMat);
-        glass.position.set(0, floorY + frameH / 2, 0.02);
-        g.add(glass);
-        // Cross bars
-        const barMat = new THREE.MeshLambertMaterial({ color: 0x3a6080 });
-        const hBar = new THREE.Mesh(new THREE.BoxGeometry(W * 0.88, 0.03, 0.03), barMat);
-        hBar.position.set(0, floorY + frameH / 2, 0.02); g.add(hBar);
-        const vBar = new THREE.Mesh(new THREE.BoxGeometry(0.03, frameH * 0.82, 0.03), barMat);
-        vBar.position.set(0, floorY + frameH / 2, 0.02); g.add(vBar);
+        // Window: blue frame spanning full wall thickness, transparent glass inset
+        const winFrame = new THREE.MeshLambertMaterial({ color: 0x4a7fa8, side: THREE.DoubleSide });
+        const winGlass = new THREE.MeshLambertMaterial({ color: 0xd4eaf7, transparent: true, opacity: 0.40, side: THREE.DoubleSide, depthWrite: false });
+        g.add(placed(new THREE.Mesh(new THREE.BoxGeometry(W,        frameH,        WALL_THICK),        winFrame), 0, floorY + frameH / 2, 0));
+        // Glass pane slightly thicker than frame to avoid z-fighting on faces
+        g.add(placed(new THREE.Mesh(new THREE.BoxGeometry(W * 0.88, frameH * 0.82, WALL_THICK + 0.01), winGlass), 0, floorY + frameH / 2, 0));
       }
-      g.position.set(cx, 0, cz);
+
+      // Center element in wall thickness using outward normal stored on drag.
+      // Falls back to inner-face placement for existing saves without _outNx/_outNy.
+      const outNx = it._outNx || 0, outNz = it._outNy || 0;
+      g.position.set(cx + outNx * WALL_THICK / 2, 0, cz + outNz * WALL_THICK / 2);
       g.rotation.y = -rot;
       addMesh(g);
     } else if (def.type === 'pillar') {

@@ -17,19 +17,19 @@ function render2D() {
     const ppm = getPPM();
     const startX = ((ox % ppm) + ppm) % ppm;
     const startY = ((oy % ppm) + ppm) % ppm;
-    // 1m linjer
-    ctx.strokeStyle = 'rgba(160,154,144,0.30)'; ctx.lineWidth = 0.7;
+    // 1m linjer — faint reference lines (white-tinted for dark canvas)
+    ctx.strokeStyle = 'rgba(255,255,255,0.07)'; ctx.lineWidth = 0.5;
     for (let x = startX; x <= W; x += ppm) {
       ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
     }
     for (let y = startY; y <= H; y += ppm) {
       ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
     }
-    // 5m linjer
+    // 5m linjer — primary grid, clearly heavier than 1m lines
     const ppm5 = ppm * 5;
     const startX5 = ((ox % ppm5) + ppm5) % ppm5;
     const startY5 = ((oy % ppm5) + ppm5) % ppm5;
-    ctx.strokeStyle = 'rgba(130,122,112,0.45)'; ctx.lineWidth = 1;
+    ctx.strokeStyle = 'rgba(255,255,255,0.18)'; ctx.lineWidth = 1.2;
     for (let x = startX5; x <= W; x += ppm5) {
       ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
     }
@@ -455,10 +455,10 @@ function drawDimLine(ctx, x1, y1, x2, y2, lbl) {
   const angle = Math.atan2(dy, dx);
   ctx.translate(mx, my); ctx.rotate(angle);
   const tw = ctx.measureText(lbl).width + 10;
-  ctx.fillStyle = '#f5f2ec';
+  ctx.fillStyle = '#252b32';
   ctx.beginPath(); ctx.roundRect(-tw/2 - 2, -10, tw + 4, 16, 3); ctx.fill();
-  ctx.fillStyle = '#1c2a3a';
-  ctx.font = 'bold 11px Inter,sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillStyle = '#e8e4df';
+  ctx.font = 'bold 12px Inter,sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   ctx.fillText(lbl, 0, -1);
   ctx.restore();
 }
@@ -538,23 +538,23 @@ function drawBin2D(ctx, bw, bd, isSel, def, fraksjon, rot) {
     ctx.strokeStyle = NG_ORANGE; ctx.lineWidth = 1.5; ctx.setLineDash([4,3]);
     ctx.beginPath(); ctx.roundRect(-bw/2-7, -bd/2-7, bw+14, bd+14, r+4); ctx.stroke();
     ctx.setLineDash([]);
-    ctx.fillStyle = NG_ORANGE; ctx.font = 'bold 9px Inter,sans-serif';
+    ctx.fillStyle = NG_ORANGE; ctx.font = 'bold 10px Inter,sans-serif';
     ctx.fillText(def.W+'mm', 0, -bd/2-14);
     ctx.save(); ctx.rotate(-Math.PI/2); ctx.fillText(def.D+'mm', 0, bw/2+14); ctx.restore();
   }
 }
 
 function drawCage2D(ctx, bw, bd, isSel, isRoll) {
-  // Floor/base plate
-  ctx.fillStyle = '#c8c4be';
+  // Floor/base plate — mid-gray, readable on both light and dark canvas
+  ctx.fillStyle = '#6a6f78';
   ctx.beginPath(); ctx.rect(-bw/2, -bd/2, bw, bd); ctx.fill();
 
-  // Interior lighter
-  ctx.fillStyle = '#dedad4';
+  // Interior slightly lighter
+  ctx.fillStyle = '#7e848e';
   ctx.beginPath(); ctx.rect(-bw/2 + 4, -bd/2 + 4, bw - 8, bd - 8); ctx.fill();
 
   // Grid lines horizontal
-  ctx.strokeStyle = '#888'; ctx.lineWidth = 1.2;
+  ctx.strokeStyle = '#aab0ba'; ctx.lineWidth = 1.2;
   const rowH = bd / 4;
   for (let i = 1; i < 4; i++) {
     ctx.beginPath();
@@ -574,7 +574,7 @@ function drawCage2D(ctx, bw, bd, isSel, isRoll) {
   }
 
   // Outer frame thick
-  ctx.strokeStyle = isSel ? NG_ORANGE : '#555';
+  ctx.strokeStyle = isSel ? NG_ORANGE : 'rgba(255,255,255,0.50)';
   ctx.lineWidth = isSel ? 2.5 : 2;
   ctx.beginPath(); ctx.rect(-bw/2, -bd/2, bw, bd); ctx.stroke();
 
@@ -586,8 +586,8 @@ function drawCage2D(ctx, bw, bd, isSel, isRoll) {
 
   // EE label
   const lbl = isRoll ? 'POSTBUR' : 'BUR EE';
-  const fs = Math.max(7, Math.min(11, bw / 9));
-  ctx.fillStyle = '#333'; ctx.font = `bold ${fs}px Inter,sans-serif`;
+  const fs = Math.max(9, Math.min(13, bw / 7));
+  ctx.fillStyle = '#ffffff'; ctx.font = `bold ${fs}px Inter,sans-serif`;
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   ctx.fillText(lbl, 0, 0);
 
@@ -616,14 +616,23 @@ function drawWallEl2D(ctx, bw, bd, isSel, it) {
   const def = it.def;
   if (def.type === 'door') {
     const swing = Math.min(bw, (def.swingR / 1000) * getPPM());
-    ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.rect(-bw / 2, -bd / 2, bw, bd); ctx.fill();
-    ctx.strokeStyle = '#333'; ctx.lineWidth = isSel ? 2.5 : 2;
+    ctx.fillStyle = '#3a4450'; ctx.beginPath(); ctx.rect(-bw / 2, -bd / 2, bw, bd); ctx.fill();
+    ctx.strokeStyle = isSel ? NG_ORANGE : 'rgba(255,255,255,0.55)'; ctx.lineWidth = isSel ? 2.5 : 2;
     ctx.beginPath(); ctx.rect(-bw / 2, -bd / 2, bw, bd); ctx.stroke();
-    ctx.strokeStyle = '#555'; ctx.lineWidth = 1; ctx.setLineDash([3, 2]);
+    // Swing sector fill — faint warm brown so the swept area reads at a glance
+    ctx.fillStyle = 'rgba(139,105,20,0.08)';
+    ctx.beginPath(); ctx.moveTo(-bw / 2, -bd / 2); ctx.arc(-bw / 2, -bd / 2, swing, 0, Math.PI / 2); ctx.closePath(); ctx.fill();
+    if (def.double) {
+      ctx.beginPath(); ctx.moveTo(bw / 2, -bd / 2); ctx.arc(bw / 2, -bd / 2, swing, Math.PI / 2, Math.PI); ctx.closePath(); ctx.fill();
+    }
+    // Swing arc — warm brown, dashed, clearly readable
+    ctx.strokeStyle = '#8B6914'; ctx.lineWidth = 1.5; ctx.setLineDash([3, 2]);
     ctx.beginPath(); ctx.arc(-bw / 2, -bd / 2, swing, 0, Math.PI / 2); ctx.stroke();
     ctx.setLineDash([]);
-    if (def.double) { ctx.beginPath(); ctx.arc(bw / 2, -bd / 2, swing, Math.PI / 2, Math.PI); ctx.stroke(); }
-    ctx.strokeStyle = '#999'; ctx.lineWidth = .8; ctx.beginPath(); ctx.moveTo(-bw / 2, -bd / 2); ctx.lineTo(-bw / 2 + swing, -bd / 2); ctx.stroke();
+    if (def.double) { ctx.setLineDash([3, 2]); ctx.beginPath(); ctx.arc(bw / 2, -bd / 2, swing, Math.PI / 2, Math.PI); ctx.stroke(); ctx.setLineDash([]); }
+    // Door leaf line — heavier and warmer so it reads as the actual panel
+    ctx.strokeStyle = '#5a3d20'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(-bw / 2, -bd / 2); ctx.lineTo(-bw / 2 + swing, -bd / 2); ctx.stroke();
+    if (def.double) { ctx.beginPath(); ctx.moveTo(bw / 2, -bd / 2); ctx.lineTo(bw / 2 - swing, -bd / 2); ctx.stroke(); }
   } else if (def.type === 'window') {
     ctx.fillStyle = '#d4eaf7'; ctx.beginPath(); ctx.rect(-bw / 2, -bd / 2, bw, bd); ctx.fill();
     ctx.strokeStyle = isSel ? NG_ORANGE : '#4a7fa8'; ctx.lineWidth = isSel ? 2 : 1.5;
@@ -664,22 +673,15 @@ function drawCompactor2D(ctx, bw, bd, isSel, def) {
     ctx.beginPath(); ctx.arc(bw*0.2, -bd/2 + bd*0.10 + i * bd*0.06, 3, 0, Math.PI*2); ctx.fill();
   });
 
-  // NG badge
-  const bW = Math.min(bw*0.4, 36), bH = 11;
-  const bY = -bd/2 + bd*0.45;
-  ctx.fillStyle = '#E8521A';
-  ctx.beginPath(); ctx.roundRect(-bW/2, bY, bW, bH, 3); ctx.fill();
-  ctx.fillStyle = '#fff'; ctx.font = `bold ${Math.max(6,Math.min(9,bW/3.5))}px Inter,sans-serif`;
+  // Name label — no NG badge, larger and fully opaque for readability
+  const nameFs = Math.max(9, Math.min(13, bw / 7));
+  ctx.fillStyle = 'rgba(255,255,255,0.92)';
+  ctx.font = `bold ${nameFs}px Inter,sans-serif`;
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-  ctx.fillText('NG', 0, bY + bH/2);
+  ctx.fillText(def.name, 0, bd * 0.18);
 
-  // Label
-  ctx.fillStyle = 'rgba(255,255,255,0.7)';
-  ctx.font = `bold ${Math.max(6, Math.min(9, bw/10))}px Inter,sans-serif`;
-  ctx.fillText('BALEX', 0, bY + bH + 10);
-
-  // Outline
-  ctx.strokeStyle = isSel ? '#E8521A' : 'rgba(0,0,0,0.30)';
+  // Outline — light so silhouette is visible on dark floor
+  ctx.strokeStyle = isSel ? '#E8521A' : 'rgba(255,255,255,0.45)';
   ctx.lineWidth = isSel ? 2.5 : 1.5;
   ctx.beginPath(); ctx.rect(-bw/2, -bd/2, bw, bd); ctx.stroke();
 
@@ -704,21 +706,15 @@ function drawMachine2D(ctx, bw, bd, isSel, def) {
   ctx.fillStyle = '#2a2a2a';
   ctx.beginPath(); ctx.rect(-bw/2, -bd/2, bw, bd * 0.22); ctx.fill();
 
-  // NG badge
-  const bW = Math.min(bw * 0.38, 34), bH = 10;
-  ctx.fillStyle = '#E8521A';
-  ctx.beginPath(); ctx.roundRect(-bW/2, -bd/2 + bd * 0.30, bW, bH, 3); ctx.fill();
-  ctx.fillStyle = '#fff'; ctx.font = `bold ${Math.max(6, Math.min(9, bW/3.5))}px Inter,sans-serif`;
+  // Name label — no NG badge, larger and fully opaque for readability
+  const nameFs = Math.max(9, Math.min(13, bw / 7));
+  ctx.fillStyle = 'rgba(255,255,255,0.92)';
+  ctx.font = `bold ${nameFs}px Inter,sans-serif`;
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-  ctx.fillText('NG', 0, -bd/2 + bd * 0.30 + bH/2);
+  ctx.fillText(def.name, 0, 0);
 
-  // Name label
-  ctx.fillStyle = 'rgba(255,255,255,0.65)';
-  ctx.font = `bold ${Math.max(6, Math.min(9, bw/10))}px Inter,sans-serif`;
-  ctx.fillText(def.name, 0, -bd/2 + bd * 0.30 + bH + 10);
-
-  // Outline
-  ctx.strokeStyle = isSel ? '#E8521A' : 'rgba(0,0,0,0.30)';
+  // Outline — light so silhouette is visible on dark floor
+  ctx.strokeStyle = isSel ? '#E8521A' : 'rgba(255,255,255,0.45)';
   ctx.lineWidth = isSel ? 2.5 : 1.5;
   ctx.beginPath(); ctx.rect(-bw/2, -bd/2, bw, bd); ctx.stroke();
 
@@ -726,7 +722,7 @@ function drawMachine2D(ctx, bw, bd, isSel, def) {
     ctx.strokeStyle = '#E8521A'; ctx.lineWidth = 1.5; ctx.setLineDash([4, 3]);
     ctx.beginPath(); ctx.rect(-bw/2 - 7, -bd/2 - 7, bw + 14, bd + 14); ctx.stroke();
     ctx.setLineDash([]);
-    ctx.fillStyle = '#E8521A'; ctx.font = 'bold 9px Inter,sans-serif';
+    ctx.fillStyle = '#E8521A'; ctx.font = 'bold 10px Inter,sans-serif';
     ctx.fillText(def.W + 'mm', 0, -bd/2 - 14);
     ctx.save(); ctx.rotate(-Math.PI/2); ctx.fillText(def.D + 'mm', 0, bw/2 + 14); ctx.restore();
   }

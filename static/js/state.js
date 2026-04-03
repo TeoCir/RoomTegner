@@ -31,6 +31,8 @@ const state = {
   activeRoom: 0,
   // Set to true when a sketch is opened via share code — disables all editing
   readOnly: false,
+  // Set to true while first-person walk mode is active (sub-mode of view='3d')
+  walkMode: false,
 };
 
 function getO() {
@@ -71,7 +73,6 @@ function calcPPM() {
     state.ppm = Math.min(aW / Math.max(sx,.1), aH / Math.max(sy,.1), 150);
   }
   state.zoom = 1.0;
-  document.getElementById('rbar').style.width = getPPM() + 'px';
 }
 
 // ── Single-room serialisation (used internally) ────────────────────────────

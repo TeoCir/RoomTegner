@@ -2,13 +2,14 @@ const scene3d = (() => {
   let renderer, scene, camera;
   let meshes = [];
   let initialized = false;
-  let currentAngle; // tracks last preset angle; unused for now but kept for future setAngle calls
 
   // Single source of truth for 3D wall thickness (metres).
   // Walls are shifted outward by WALL_THICK/2 so their inner faces align exactly
   // with the room boundary coordinates (0→W, 0→D) used by the 2D snap system.
   // Changing this value automatically propagates to all wall geometry and comments.
   const WALL_THICK = 0.12;
+  const FLOOR_OUTLINE_OFFSET = 2; // metres outward from room boundary for pedestal edge
+  const STEP_H = 0.30;            // height of the pedestal step (30cm)
 
   // GLB model cache: typeId → THREE.Group (cloned per instance)
   const glbCache = {};
@@ -57,12 +58,27 @@ const scene3d = (() => {
 
   // Orbit state
   let orbit = { active: false, lastX: 0, lastY: 0, theta: Math.PI*0.35, phi: Math.PI*0.3, radius: 0, target: new THREE.Vector3() };
+
+  // Walk mode state — ephemeral, never serialised (same pattern as orbit above)
+  const walk = {
+    active: false,
+    yaw: 0,           // horizontal look angle (radians, around Y axis)
+    pitch: 0,         // vertical look angle (radians, clamped ±70° = ±1.22 rad)
+    x: 0,             // camera position Three.js X
+    z: 0,             // camera position Three.js Z
+    EYE_H: 1.6,       // eye height in metres
+    SPEED: 2.0,       // movement speed m/s
+    keysHeld: {},     // {key: true} while held — cleared on exit
+    lastTime: 0,      // ms timestamp for delta-time movement
+  };
+
   let _skiltMeshMap = []; // maps mesh → item id for raycasting
 
   function initOrbit() {
     const el = renderer.domElement;
     let didDrag = false;
     el.addEventListener('mousedown', e => {
+      if (walk.active) return; // walk mode owns the canvas — don't activate orbit drag
       if (e.button === 0) {
         orbit.active = true; orbit.lastX = e.clientX; orbit.lastY = e.clientY;
         el.style.cursor = 'grabbing'; didDrag = false;
@@ -91,7 +107,7 @@ const scene3d = (() => {
 
     // Keyboard pan — arrows move camera like a drone (strafe left/right, up/down)
     document.addEventListener('keydown', e => {
-      if (state.view !== '3d') return;
+      if (state.view !== '3d' || state.walkMode) return; // walk mode owns arrow keys
       const step = 0.25;
       switch (e.key) {
         case 'ArrowLeft':
@@ -115,6 +131,143 @@ const scene3d = (() => {
         case '-': e.preventDefault(); orbit.radius = Math.min(40, orbit.radius + 0.8); updateOrbitCamera(); break;
       }
     });
+  }
+
+  // ── Walk mode input setup ─────────────────────────────────────────────────
+  // Called once from init(). Sets up Pointer Lock + mouse-look + key-held tracking.
+  // All handlers guard on walk.active so they are silent outside walk mode.
+  function initWalk() {
+    const el = renderer.domElement;
+
+    // Pointer Lock lifecycle
+    document.addEventListener('pointerlockchange', () => {
+      if (document.pointerLockElement === el) {
+        // Lock acquired — walk is now fully active
+        walk.active = true;
+        state.walkMode = true;
+        const hud = document.getElementById('walk-hud');
+        if (hud) {
+          hud.textContent = 'WASD / Piltaster = beveg  ·  Mus = se rundt  ·  Esc = avslutt';
+          hud.style.pointerEvents = 'none';
+          hud.style.cursor = '';
+        }
+      } else {
+        // Lock lost (Escape or document.exitPointerLock()) — exit walk cleanly
+        _exitWalkMode();
+      }
+    });
+
+    document.addEventListener('pointerlockerror', () => {
+      console.warn('Pointer lock request failed');
+      _exitWalkMode();
+    });
+
+    // Mouse look — movementX/Y only available while pointer is locked
+    el.addEventListener('mousemove', e => {
+      if (!walk.active) return;
+      const SENS = 0.002;
+      walk.yaw  -= e.movementX * SENS;
+      walk.pitch = Math.max(-1.22, Math.min(1.22, walk.pitch - e.movementY * SENS));
+    });
+
+    // Key-held tracking for smooth WASD movement
+    document.addEventListener('keydown', e => {
+      if (!walk.active) return;
+      walk.keysHeld[e.key] = true;
+      const moveKeys = ['w','a','s','d','W','A','S','D','ArrowUp','ArrowDown','ArrowLeft','ArrowRight'];
+      if (moveKeys.includes(e.key)) e.preventDefault();
+    });
+
+    document.addEventListener('keyup', e => {
+      if (!walk.active) return;
+      walk.keysHeld[e.key] = false;
+    });
+  }
+
+  // ── Walk mode helpers ─────────────────────────────────────────────────────
+
+  function _getRoomBounds() {
+    if (state.roomMode === 'rect')
+      return { minX: 0, maxX: state.roomW, minZ: 0, maxZ: state.roomD };
+    const xs = state.poly.map(p => p.x), zs = state.poly.map(p => p.y);
+    return { minX: Math.min(...xs), maxX: Math.max(...xs),
+             minZ: Math.min(...zs), maxZ: Math.max(...zs) };
+  }
+
+  // Per-frame camera update — only called when walk.active (from animate())
+  function _walkUpdateCamera() {
+    const now = performance.now();
+    // Cap dt at 100ms to prevent teleport-jump when tab regains focus
+    const dt = Math.min((now - walk.lastTime) / 1000, 0.1);
+    walk.lastTime = now;
+
+    // Movement vectors derived from yaw only — pitch doesn't tilt the walk plane
+    const sinY = Math.sin(walk.yaw), cosY = Math.cos(walk.yaw);
+    const fwdX = sinY, fwdZ = cosY;
+    const rgtX = cosY, rgtZ = -sinY;
+
+    let moveX = 0, moveZ = 0;
+    const k = walk.keysHeld;
+    if (k['w'] || k['W'] || k['ArrowUp'])    { moveX -= fwdX; moveZ -= fwdZ; }
+    if (k['s'] || k['S'] || k['ArrowDown'])  { moveX += fwdX; moveZ += fwdZ; }
+    if (k['a'] || k['A'] || k['ArrowLeft'])  { moveX -= rgtX; moveZ -= rgtZ; }
+    if (k['d'] || k['D'] || k['ArrowRight']) { moveX += rgtX; moveZ += rgtZ; }
+
+    const len = Math.sqrt(moveX * moveX + moveZ * moveZ);
+    if (len > 0) {
+      const dist = walk.SPEED * dt;
+      const nx = walk.x + (moveX / len) * dist;
+      const nz = walk.z + (moveZ / len) * dist;
+      // Bounding-box collision: 0.2m margin from each wall
+      // Correct for rectangular rooms; safe approximation for L/T-shaped free rooms
+      const MARGIN = 0.2;
+      const b = _getRoomBounds();
+      walk.x = Math.max(b.minX + MARGIN, Math.min(b.maxX - MARGIN, nx));
+      walk.z = Math.max(b.minZ + MARGIN, Math.min(b.maxZ - MARGIN, nz));
+    }
+
+    camera.position.set(walk.x, walk.EYE_H, walk.z);
+    // YXZ Euler order = standard FPS convention: yaw applied in world space first,
+    // then pitch in local space — avoids gimbal lock at vertical look extremes.
+    camera.rotation.order = 'YXZ';
+    camera.rotation.y = walk.yaw;
+    camera.rotation.x = walk.pitch;
+    camera.rotation.z = 0;
+  }
+
+  function _showWalkHUD(visible) {
+    const hud = document.getElementById('walk-hud');
+    if (!hud) return;
+    if (!visible) { hud.style.display = 'none'; return; }
+    hud.style.display = 'block';
+    hud.style.pointerEvents = 'auto';
+    hud.style.cursor = 'pointer';
+    hud.textContent = 'Klikk for å aktivere musekontroll...';
+    hud.onclick = () => renderer.domElement.requestPointerLock();
+  }
+
+  // Public entry point — called from Walk button in index.html
+  function enterWalkMode() {
+    if (!initialized) return;
+    const { cx, cz } = getRoomOrbitParams();
+    walk.x = cx;
+    walk.z = cz;
+    walk.yaw = 0;
+    walk.pitch = 0;
+    walk.lastTime = performance.now();
+    // Orbit state is intentionally NOT modified — returning to orbit restores exact pre-walk view
+    _showWalkHUD(true); // show "click to activate" immediately
+    renderer.domElement.requestPointerLock(); // pointerlockchange handler activates walk fully
+  }
+
+  function _exitWalkMode() {
+    if (!walk.active && !state.walkMode) return; // already exited
+    walk.active = false;
+    walk.keysHeld = {};
+    state.walkMode = false;
+    _showWalkHUD(false);
+    // Restore orbit camera (orbit state was never touched by walk mode)
+    if (camera) updateOrbitCamera();
   }
 
   function trySelectSkilt(e) {
@@ -164,6 +317,10 @@ const scene3d = (() => {
   // Computes orbit center and radius from the current room shape.
   // Uses polygon centroid/bounds for free mode, rect dimensions for rect mode.
   // Called once on init() and also by setAngle() for camera presets.
+  // Radius formula: dim * 1.2 + 2  — keeps the room comfortably close (~2–3m
+  // outside the front wall at the default isometric angle). The +2 constant
+  // prevents being too close on tiny rooms (e.g. 3×3m).
+  // Previously 2.2× which made every room look like a dollhouse from far away.
   function getRoomOrbitParams() {
     const H = state.roomH;
     if (state.roomMode === 'free' && state.poly && state.poly.length > 0) {
@@ -172,18 +329,21 @@ const scene3d = (() => {
       const cz = poly.reduce((s, p) => s + p.y, 0) / poly.length;
       const xs = poly.map(p => p.x), zs = poly.map(p => p.y);
       const span = Math.max(Math.max(...xs) - Math.min(...xs), Math.max(...zs) - Math.min(...zs));
-      return { cx, cz: cz, radius: span * 2.2, H };
+      return { cx, cz: cz, radius: span * 1.2 + 2, H };
     }
     const rW = state.roomW, rD = state.roomD;
-    return { cx: rW / 2, cz: rD / 2, radius: Math.max(rW, rD) * 2.2, H };
+    return { cx: rW / 2, cz: rD / 2, radius: Math.max(rW, rD) * 1.2 + 2, H };
   }
 
   function resetOrbit() {
     const { cx, cz, radius, H } = getRoomOrbitParams();
-    orbit.target.set(cx, H * 0.35, cz);
+    // Target at H*0.22 (vs 0.35) keeps all 4 walls balanced in the isometric frame
+    // and avoids clipping the front-bottom corner on first load.
+    orbit.target.set(cx, H * 0.22, cz);
     orbit.radius = radius;
     orbit.theta = Math.PI * 0.35;
-    orbit.phi = Math.PI * 0.3;
+    // phi 0.32 (slightly more elevated than 0.30) shows more floor, better room overview
+    orbit.phi = Math.PI * 0.32;
     updateOrbitCamera();
   }
 
@@ -196,8 +356,12 @@ const scene3d = (() => {
     const H = container.clientHeight || 800;
 
     scene = new THREE.Scene();
-    scene.background = new THREE.Color(0xb0b8bf);
-    // scene.fog = new THREE.Fog(0xb0b8bf, 18, 60);
+    // Medium-dark neutral gray — sits between the original flat gray and pitch black.
+    // Avoids the harsh bright-room vs. black-void contrast that makes equipment hard to read.
+    scene.background = new THREE.Color(0x5a6068);
+    // FogExp2 colour matches background so distant objects fade into the sky seamlessly.
+    // Density 0.018 starts to show at ~15m — enough for large rooms but not intrusive.
+    scene.fog = new THREE.FogExp2(0x5a6068, 0.018);
 
     // Renderer
     renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -205,21 +369,30 @@ const scene3d = (() => {
     renderer.setPixelRatio(window.devicePixelRatio);
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    // ACESFilmic tone mapping + sRGB output give a photographic, non-flat look
+    // without changing any geometry or materials — pure renderer-level quality upgrade.
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 0.85;
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
     container.appendChild(renderer.domElement);
 
     // Camera
-    camera = new THREE.PerspectiveCamera(45, W / H, 0.1, 200);
+    // 58° matches what RoomSketcher / Planner 5D use — wider than the original 45°
+    // so the room feels photographic rather than toy-like.
+    camera = new THREE.PerspectiveCamera(58, W / H, 0.1, 200);
     resetOrbit();
     initOrbit();
 
-    // Lights — industrial overhead feel
-    const ambient = new THREE.AmbientLight(0xc8d4de, 0.75);
+    // Lights — indoor industrial feel.
+    // Ambient at 0.35 — lower than before to avoid flat wash; contrast comes from sun + PointLight.
+    const ambient = new THREE.AmbientLight(0xdde4ea, 0.35);
     scene.add(ambient);
-    const sun = new THREE.DirectionalLight(0xfff6d8, 1.2);
+    // Sun raised to 1.1 and shadow map bumped to 2048 for crisper contrast and shadow edges.
+    const sun = new THREE.DirectionalLight(0xfff6d8, 1.1);
     sun.position.set(8, 16, 10);
     sun.castShadow = true;
-    sun.shadow.mapSize.width = 1024;
-    sun.shadow.mapSize.height = 1024;
+    sun.shadow.mapSize.width = 2048;
+    sun.shadow.mapSize.height = 2048;
     sun.shadow.camera.near = 0.5;
     sun.shadow.camera.far = 60;
     sun.shadow.camera.left = -16;
@@ -231,7 +404,10 @@ const scene3d = (() => {
     const fill = new THREE.DirectionalLight(0xb0c8e0, 0.5);
     fill.position.set(-8, 6, -8);
     scene.add(fill);
+    // Overhead fill removed — the ambient light covers this adequately and
+    // the extra DirectionalLight added per-fragment shader cost for every mesh.
 
+    initWalk();
     initialized = true;
     animate();
     rebuild();
@@ -243,27 +419,28 @@ const scene3d = (() => {
   function animate() {
     requestAnimationFrame(animate);
     if (_dirty) { _doRebuild(); _dirty = false; }
+    if (walk.active) _walkUpdateCamera(); // FPS camera update — only runs in walk mode
     renderer.render(scene, camera);
   }
 
   function setAngle(a) {
-    currentAngle = a;
     if (!camera) return;
     const { cx, cz, radius, H } = getRoomOrbitParams();
 
     // Per-angle radius: side/front views use the perpendicular room dimension so
     // narrow rooms (e.g. 2m × 10m) get a tight framing instead of zooming out to max(W,D).
+    // Same formula as getRoomOrbitParams: dim * 1.2 + 2.
     let r = radius;
     if (state.roomMode === 'rect') {
       const rW = state.roomW, rD = state.roomD;
-      if (a === 'side-l' || a === 'side-r') r = rW * 2.2;
-      else if (a === 'front')               r = rD * 2.2;
+      if (a === 'side-l' || a === 'side-r') r = rW * 1.2 + 2;
+      else if (a === 'front')               r = rD * 1.2 + 2;
     } else if (state.poly && state.poly.length > 0) {
       const xs = state.poly.map(p => p.x), zs = state.poly.map(p => p.y);
       const xSpan = Math.max(...xs) - Math.min(...xs);
       const zSpan = Math.max(...zs) - Math.min(...zs);
-      if (a === 'side-l' || a === 'side-r') r = xSpan * 2.2;
-      else if (a === 'front')               r = zSpan * 2.2;
+      if (a === 'side-l' || a === 'side-r') r = xSpan * 1.2 + 2;
+      else if (a === 'front')               r = zSpan * 1.2 + 2;
     }
 
     orbit.target.set(cx, H * 0.35, cz);
@@ -385,18 +562,231 @@ const scene3d = (() => {
 
   function addMesh(m) { scene.add(m); meshes.push(m); return m; }
 
+  // ── Floor tile texture ──────────────────────────────────────────────────
+  // Created once at first use and cached for the lifetime of the page.
+  // Reusing the same THREE.CanvasTexture object across rebuilds avoids VRAM
+  // churn — only the repeat vector changes per-rebuild (no GPU re-upload needed).
+  // Design: warm concrete base with barely-visible grout lines at tile edges.
+  // The existing LineSegments grid sits at y=0.005 and provides crisp 1m joints;
+  // the texture adds surface quality (polished concrete) without doubling the lines.
+  let _floorTex = null;
+  function getFloorTex() {
+    if (_floorTex) return _floorTex;
+    const SZ = 512, GW = 2; // canvas size, grout line width (px)
+    const c = document.createElement('canvas');
+    c.width = SZ; c.height = SZ;
+    const ctx = c.getContext('2d');
+    // Tile surface — same warm concrete as the existing floor colour
+    ctx.fillStyle = '#dedad5';
+    ctx.fillRect(0, 0, SZ, SZ);
+    // Subtle radial highlight: slightly brighter centre, slightly darker edges —
+    // reads as a polished/sealed concrete tile under overhead lighting.
+    const grad = ctx.createRadialGradient(SZ/2, SZ/2, SZ*0.1, SZ/2, SZ/2, SZ*0.7);
+    grad.addColorStop(0, 'rgba(255,255,255,0.05)');
+    grad.addColorStop(1, 'rgba(0,0,0,0.07)');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, SZ, SZ);
+    // Very faint grout lines at tile edges — complement (not duplicate) the
+    // LineSegments grid that floats 5mm above the floor.
+    ctx.fillStyle = 'rgba(0,0,0,0.08)';
+    ctx.fillRect(0, 0, SZ, GW); ctx.fillRect(0, SZ-GW, SZ, GW); // top/bottom
+    ctx.fillRect(0, 0, GW, SZ); ctx.fillRect(SZ-GW, 0, GW, SZ); // left/right
+    _floorTex = new THREE.CanvasTexture(c);
+    _floorTex.wrapS = THREE.RepeatWrapping;
+    _floorTex.wrapT = THREE.RepeatWrapping;
+    return _floorTex;
+  }
+
+  // ── Blob contact shadow ─────────────────────────────────────────────────
+  // Cheap alternative to per-object shadow casting. A radial-gradient plane
+  // placed just above the floor under each container/cage. depthWrite=false
+  // so it blends correctly with the floor without writing to the depth buffer.
+  // No shadow-map involvement — zero additional GPU shadow-pass cost.
+  let _blobTex = null;
+  function getBlobTex() {
+    if (_blobTex) return _blobTex;
+    const SZ = 128;
+    const c = document.createElement('canvas');
+    c.width = SZ; c.height = SZ;
+    const ctx = c.getContext('2d');
+    const g = ctx.createRadialGradient(SZ/2, SZ/2, 0, SZ/2, SZ/2, SZ/2);
+    g.addColorStop(0,    'rgba(0,0,0,0.38)');
+    g.addColorStop(0.45, 'rgba(0,0,0,0.16)');
+    g.addColorStop(1,    'rgba(0,0,0,0)');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, SZ, SZ);
+    _blobTex = new THREE.CanvasTexture(c);
+    return _blobTex;
+  }
+
+  function addBlobShadow(cx, cz, W, D) {
+    const blob = new THREE.Mesh(
+      new THREE.PlaneGeometry(W * 1.15, D * 1.15),
+      new THREE.MeshBasicMaterial({ map: getBlobTex(), transparent: true, depthWrite: false })
+    );
+    blob.rotation.x = -Math.PI / 2;
+    // y=0.002: above floor (top at y=0) so the blob shows; below the LineSegments
+    // grid (y=0.005) so grout lines read through. depthWrite=false means the blob
+    // never occludes geometry drawn after it in the transparent pass.
+    blob.position.set(cx, 0.002, cz);
+    addMesh(blob);
+  }
+
   function buildRoom() {
     const H = state.roomH;
-    const wallMat = new THREE.MeshLambertMaterial({ color: 0xc8c4be, transparent: true, opacity: 0.32, side: THREE.DoubleSide, depthWrite: false });
+    // Lambert for walls — cheaper shader, no PBR cost. Tone mapping still improves
+    // the look vs. the original. MeshStandardMaterial + clone-per-wall was too costly.
+    const wallMat = new THREE.MeshLambertMaterial({ color: 0xc8c4be, transparent: true, opacity: 0.38, side: THREE.DoubleSide, depthWrite: false });
     const edgeMat = new THREE.LineBasicMaterial({ color: 0x706c66 });
+
+    // Solid inner-face plane — only visible from the room side because FrontSide
+    // culls the face when the camera is on the outside (normal points away from camera).
+    // px/pz: inner wall face position (polygon boundary). rotY: makes normal face inward.
+    function addInnerWallFace(px, pz, w, rotY) {
+      const p = new THREE.Mesh(
+        new THREE.PlaneGeometry(w, H),
+        // MeshStandardMaterial: directional lights produce a visible gradient across
+        // the wall surface — Lambert was flat because it ignores roughness/metalness.
+        new THREE.MeshStandardMaterial({ color: 0xd4d0cb, roughness: 0.85 })
+      );
+      p.position.set(px, H / 2, pz);
+      p.rotation.y = rotY;
+      p.receiveShadow = true;
+      addMesh(p);
+    }
+
+    // Ground plane — large surface extending beyond room walls so the room feels
+    // grounded rather than floating. Same warm-gray tone as the interior floor at
+    // ~85% brightness — visually continuous but subtly darker to mark the boundary.
+    const groundSize = 80;
+    let gcx = 0, gcz = 0;
+    if (state.roomMode === 'rect') {
+      gcx = state.roomW / 2; gcz = state.roomD / 2;
+    } else if (state.poly && state.poly.length > 0) {
+      gcx = state.poly.reduce((s, p) => s + p.x, 0) / state.poly.length;
+      gcz = state.poly.reduce((s, p) => s + p.y, 0) / state.poly.length;
+    }
+    // Bounding box of the room — works for both rect and free mode.
+    let bbMinX = 0, bbMaxX = 0, bbMinZ = 0, bbMaxZ = 0;
+    if (state.roomMode === 'rect') {
+      bbMinX = 0; bbMaxX = state.roomW; bbMinZ = 0; bbMaxZ = state.roomD;
+    } else if (state.poly && state.poly.length > 0) {
+      bbMinX = Math.min(...state.poly.map(p => p.x));
+      bbMaxX = Math.max(...state.poly.map(p => p.x));
+      bbMinZ = Math.min(...state.poly.map(p => p.y));
+      bbMaxZ = Math.max(...state.poly.map(p => p.y));
+    }
+    const f = FLOOR_OUTLINE_OFFSET;
+    const slabW = bbMaxX - bbMinX + f*2;
+    const slabD = bbMaxZ - bbMinZ + f*2;
+    const slabCX = (bbMinX + bbMaxX) / 2;
+    const slabCZ = (bbMinZ + bbMaxZ) / 2;
+
+    // Pedestal slab — rectangular box always larger than the room by FLOOR_OUTLINE_OFFSET.
+    // Top surface sits at y=-WALL_THICK (room floor level); sides are the visible step faces.
+    const slab = new THREE.Mesh(
+      new THREE.BoxGeometry(slabW, STEP_H, slabD),
+      new THREE.MeshStandardMaterial({ color: 0x6e6b67, roughness: 0.9, metalness: 0 })
+    );
+    slab.position.set(slabCX, -WALL_THICK - STEP_H/2, slabCZ);
+    slab.castShadow = true;
+    slab.receiveShadow = true;
+    addMesh(slab);
+
+    // Slab edge curb — a low wall (20cm tall, 8cm thick) running along all 4 edges of the slab top.
+    // Sits proud of the slab face by the curb thickness, so it's visible from outside.
+    // Reads as a concrete kerb / room boundary marker.
+    { const curbH = 0.20, curbT = 0.08;
+      const curbMat = new THREE.MeshStandardMaterial({ color: 0x5a5855, roughness: 0.9, metalness: 0 });
+      const slabTop = -WALL_THICK;
+      const x0 = slabCX - slabW/2, x1 = slabCX + slabW/2;
+      const z0 = slabCZ - slabD/2, z1 = slabCZ + slabD/2;
+      // [boxW, boxD, cx, cz]  — all sit at y = slabTop + curbH/2
+      [
+        [slabW + curbT*2, curbT, slabCX, z0 - curbT/2],  // north
+        [slabW + curbT*2, curbT, slabCX, z1 + curbT/2],  // south
+        [curbT, slabD,           x0 - curbT/2, slabCZ],  // west
+        [curbT, slabD,           x1 + curbT/2, slabCZ],  // east
+      ].forEach(([bw, bd, cx, cz]) => {
+        const c = new THREE.Mesh(new THREE.BoxGeometry(bw, curbH, bd), curbMat);
+        c.position.set(cx, slabTop + curbH/2, cz);
+        c.castShadow = true;
+        c.receiveShadow = true;
+        addMesh(c);
+      }); }
+
+    // Outer ground — sits STEP_H below the top of the pedestal slab.
+    const groundMat = new THREE.MeshStandardMaterial({ color: 0x615f5c, roughness: 0.9, metalness: 0 });
+    const ground = new THREE.Mesh(new THREE.PlaneGeometry(groundSize, groundSize), groundMat);
+    ground.rotation.x = -Math.PI / 2;
+    ground.position.set(gcx, -WALL_THICK - STEP_H, gcz);
+    ground.receiveShadow = true;
+    addMesh(ground);
+
+    // Faint 1m grid on outer ground — gives spatial scale, reads as an architectural site plan.
+    { const groundY = -WALL_THICK - STEP_H;
+      const gRange = 20;
+      const gx0 = Math.floor(slabCX - gRange), gx1 = Math.ceil(slabCX + gRange);
+      const gz0 = Math.floor(slabCZ - gRange), gz1 = Math.ceil(slabCZ + gRange);
+      const ogp = [];
+      for (let x = gx0; x <= gx1; x++) ogp.push(x, groundY+0.005, gz0,  x, groundY+0.005, gz1);
+      for (let z = gz0; z <= gz1; z++) ogp.push(gx0, groundY+0.005, z,  gx1, groundY+0.005, z);
+      const ogg = new THREE.BufferGeometry();
+      ogg.setAttribute('position', new THREE.Float32BufferAttribute(ogp, 3));
+      addMesh(new THREE.LineSegments(ogg, new THREE.LineBasicMaterial({ color: 0x6a6764 }))); }
+
+    // Crisp border line at base of slab — architectural edge definition.
+    { const groundY = -WALL_THICK - STEP_H;
+      const x0 = slabCX - slabW/2, x1 = slabCX + slabW/2;
+      const z0 = slabCZ - slabD/2, z1 = slabCZ + slabD/2;
+      const by = groundY + 0.005;
+      const bp = [x0,by,z0, x1,by,z0, x1,by,z1, x0,by,z1, x0,by,z0];
+      const bg = new THREE.BufferGeometry();
+      bg.setAttribute('position', new THREE.Float32BufferAttribute(bp, 3));
+      addMesh(new THREE.Line(bg, new THREE.LineBasicMaterial({ color: 0x4e4c4a }))); }
+
+    // Studio backdrop walls — sit at the grid boundary (20m from slab center), one on each side.
+    // MeshBasicMaterial matches scene background exactly so wall blends into sky seamlessly.
+    // Tall enough (25m) to fill the view at any camera angle. DoubleSide so orbit inside the
+    // perimeter still shows the wall face.
+    // Backdrop walls placed well beyond the camera's max orbit radius (roomMax * 2.2).
+    // 38m covers any room up to ~17m wide. Slightly lighter than sky so they read as
+    // a surface rather than being invisible.
+    { const bdRange = 38;
+      const wallH = 30;
+      const wallSpan = bdRange * 2;
+      const groundY = -WALL_THICK - STEP_H;
+      const wallMidY = groundY + wallH / 2;
+      const bdMat = new THREE.MeshBasicMaterial({ color: 0xd8d4ce, side: THREE.DoubleSide });
+      [
+        [slabCX,           slabCZ - bdRange,  0          ], // north
+        [slabCX,           slabCZ + bdRange,  Math.PI    ], // south
+        [slabCX - bdRange, slabCZ,            Math.PI/2  ], // west
+        [slabCX + bdRange, slabCZ,           -Math.PI/2  ], // east
+      ].forEach(([cx, cz, ry]) => {
+        const bw = new THREE.Mesh(new THREE.PlaneGeometry(wallSpan, wallH), bdMat);
+        bw.position.set(cx, wallMidY, cz);
+        bw.rotation.y = ry;
+        addMesh(bw);
+      }); }
+
+    // Ceiling industrial light — warm point light simulating overhead strip fixtures.
+    // No castShadow to avoid a second expensive shadow pass. Tracked via addMesh() so
+    // it is torn down and recreated with the room geometry on each rebuild.
+    const ptLight = new THREE.PointLight(0xfff0d0, 0.45, 25);
+    ptLight.position.set(gcx, H - 0.3, gcz);
+    addMesh(ptLight);
 
     if (state.roomMode === 'rect') {
       const W = state.roomW, D = state.roomD;
 
-      // Floor — concrete. Sits just below y=0 so containers rest on y=0.
+      // Floor — sealed/epoxy concrete. Sits just below y=0 so containers rest on y=0.
+      // Tile texture repeat = (W, D) gives exactly 1 tile per metre — BoxGeometry top-face
+      // UV spans [0,1]×[0,1] across width×depth, so repeat drives the tile count directly.
+      // roughness reduced to 0.65 (from 0.75) to give a slight polished-concrete sheen.
+      { const ft = getFloorTex(); ft.repeat.set(W, D); }
       const floorMesh = new THREE.Mesh(
         new THREE.BoxGeometry(W, WALL_THICK, D),
-        new THREE.MeshLambertMaterial({ color: 0x6e6b67 })
+        new THREE.MeshStandardMaterial({ color: 0xdedad5, roughness: 0.65, metalness: 0, map: getFloorTex() })
       );
       floorMesh.position.set(W/2, -WALL_THICK/2, D/2);
       floorMesh.receiveShadow = true;
@@ -408,7 +798,7 @@ const scene3d = (() => {
       for (let i = 0; i <= Math.ceil(D); i++) { gpts.push(0,0.005,i, W,0.005,i); }
       const gg = new THREE.BufferGeometry();
       gg.setAttribute('position', new THREE.Float32BufferAttribute(gpts, 3));
-      addMesh(new THREE.LineSegments(gg, new THREE.LineBasicMaterial({ color: 0x4a4845 })));
+      addMesh(new THREE.LineSegments(gg, new THREE.LineBasicMaterial({ color: 0xc4c0bc })));
 
       // 4 walls — each shifted outward by WALL_THICK/2 so the inner face aligns
       // exactly with the room boundary (0→W, 0→D). This matches the 2D snap system
@@ -426,6 +816,30 @@ const scene3d = (() => {
           addMesh(m);
         });
 
+
+      // Inner wall faces — solid planes visible only from inside the room.
+      // After rotation.y=angle a PlaneGeometry normal points (sin(angle),0,cos(angle)).
+      addInnerWallFace(W/2, 0,   W, 0);            // north: normal +Z
+      addInnerWallFace(W/2, D,   W, Math.PI);      // south: normal -Z
+      addInnerWallFace(0,   D/2, D, Math.PI/2);    // west:  normal +X
+      addInnerWallFace(W,   D/2, D, -Math.PI/2);   // east:  normal -X
+
+      // Baseboards — 8cm tall strip at each wall-floor junction.
+      // receiveShadow=true so the sun casts a shadow line at the base of each wall,
+      // grounding the room visually. castShadow=false — no shadow-map cost.
+      { const bH = 0.08, bD = 0.025;
+        const bMat = new THREE.MeshStandardMaterial({ color: 0xb0aba4, roughness: 0.8 });
+        [
+          [W,    bH, bD,    W/2,       bH/2, bD/2      ], // north (inner face z=0)
+          [W,    bH, bD,    W/2,       bH/2, D - bD/2  ], // south (inner face z=D)
+          [bD,   bH, D,     bD/2,      bH/2, D/2       ], // west  (inner face x=0)
+          [bD,   bH, D,     W - bD/2,  bH/2, D/2       ], // east  (inner face x=W)
+        ].forEach(([bw, bh, bd, bx, by, bz]) => {
+          const b = new THREE.Mesh(new THREE.BoxGeometry(bw, bh, bd), bMat);
+          b.position.set(bx, by, bz);
+          b.receiveShadow = true;
+          addMesh(b);
+        }); }
 
       // Edge lines
       [[[0,0,0],[W,0,0],[W,H,0],[0,H,0],[0,0,0]],
@@ -456,7 +870,14 @@ const scene3d = (() => {
       }
       floorShape.attributes.position.needsUpdate = true;
       floorShape.computeVertexNormals();
-      const floorMesh = new THREE.Mesh(floorShape, new THREE.MeshLambertMaterial({ color: 0x6e6b67, side: THREE.DoubleSide }));
+      // ShapeGeometry UVs span [0,1]×[0,1] across the shape bounding box.
+      // repeat = (roomWidth, roomDepth) gives exactly 1 tile per metre.
+      // Bounding box is computed inline here — minX/maxX are declared later for the
+      // grid clipping functions, so we avoid a forward-reference error.
+      { const ft = getFloorTex();
+        const _xs = poly.map(p => p.x), _zs = poly.map(p => p.y);
+        ft.repeat.set(Math.max(..._xs) - Math.min(..._xs), Math.max(..._zs) - Math.min(..._zs)); }
+      const floorMesh = new THREE.Mesh(floorShape, new THREE.MeshStandardMaterial({ color: 0xdedad5, roughness: 0.65, metalness: 0, side: THREE.DoubleSide, map: getFloorTex() }));
       floorMesh.receiveShadow = true;
       addMesh(floorMesh);
 
@@ -509,7 +930,7 @@ const scene3d = (() => {
       if (gpts.length) {
         const gg = new THREE.BufferGeometry();
         gg.setAttribute('position', new THREE.Float32BufferAttribute(gpts, 3));
-        addMesh(new THREE.LineSegments(gg, new THREE.LineBasicMaterial({ color: 0x4a4845 })));
+        addMesh(new THREE.LineSegments(gg, new THREE.LineBasicMaterial({ color: 0xc4c0bc })));
       }
 
       // Walls — one per polygon edge, shifted outward by WALL_THICK/2 so inner
@@ -538,6 +959,32 @@ const scene3d = (() => {
         );
         wall.rotation.y = -Math.atan2(dz, dx);
         addMesh(wall);
+        // Inner face at the polygon boundary (no outward offset). For windSign=1 the
+        // wall's rotation already makes the plane normal point inward; flip π for CW.
+        addInnerWallFace(
+          (a.x + b.x) / 2,
+          (a.y + b.y) / 2,
+          len,
+          -Math.atan2(dz, dx) + (windSign < 0 ? Math.PI : 0)
+        );
+
+        // Baseboard along the inner face of this wall segment.
+        // Placed at the polygon boundary (inward side), same rotation as the wall.
+        // castShadow=false — no shadow-map cost; receiveShadow=true for depth.
+        { const bH = 0.08, bD = 0.025;
+          const inNx = -outNx, inNz = -outNz;
+          const board = new THREE.Mesh(
+            new THREE.BoxGeometry(len, bH, bD),
+            new THREE.MeshStandardMaterial({ color: 0xb0aba4, roughness: 0.8 })
+          );
+          board.position.set(
+            (a.x + b.x) / 2 + inNx * bD / 2,
+            bH / 2,
+            (a.y + b.y) / 2 + inNz * bD / 2
+          );
+          board.rotation.y = -Math.atan2(dz, dx);
+          board.receiveShadow = true;
+          addMesh(board); }
 
         // Edge lines for this wall
         const ep = [[a.x,0,a.y],[b.x,0,b.y],[b.x,H,b.y],[a.x,H,a.y],[a.x,0,a.y]];
@@ -757,27 +1204,27 @@ const scene3d = (() => {
     }
     const texture = _skilt3dTexCache[key];
 
-    // White frame — thin backing plane that creates the white border around the icon.
-    // Kept at 4mm depth so it is nearly invisible from the side (previous 40mm caused
-    // a visible white stripe when containers were placed directly in front of the sign).
+    // Mounting plate frame — MeshStandardMaterial responds to directional lighting (Lambert
+    // was flat). roughness 0.3 + metalness 0.1 reads as semi-gloss plastic/aluminium bracket.
+    // castShadow = true so the frame casts a visible shadow on the wall, giving depth.
     const frame = new THREE.Mesh(
-      new THREE.BoxGeometry(sz + 0.04, sz + 0.04, 0.004),
-      new THREE.MeshLambertMaterial({ color: 0xffffff })
+      new THREE.BoxGeometry(sz + 0.04, sz + 0.04, 0.014),
+      new THREE.MeshStandardMaterial({ color: 0xefefef, roughness: 0.3, metalness: 0.1 })
     );
 
-    // Sign icon/texture — floats 3mm in front of frame face to avoid z-fighting
+    // Sign icon/texture — floats in front of frame face to avoid z-fighting
     const face = new THREE.Mesh(
       new THREE.PlaneGeometry(sz, sz),
       new THREE.MeshBasicMaterial({ map: texture, side: THREE.FrontSide })
     );
-    face.position.z = 0.005;
+    face.position.z = 0.009;
 
     // Back face — same texture, rotated 180° so it appears correct (not mirrored) from behind
     const backFace = new THREE.Mesh(
       new THREE.PlaneGeometry(sz, sz),
       new THREE.MeshBasicMaterial({ map: texture, side: THREE.FrontSide })
     );
-    backFace.position.z = -0.005;
+    backFace.position.z = -0.009;
     backFace.rotation.y = Math.PI;
 
     const group = new THREE.Group();
@@ -789,7 +1236,7 @@ const scene3d = (() => {
     // wi.wx/wz is on the polygon boundary = inner wall face (walls are pushed outward by WALL_THICK/2
     // so their inner faces align with the polygon boundary). We only need frame half-depth + clearance.
     // WALL_THICK/2 was here before the wall-push fix (commit 0b07aec) when wi.wx/wz was the wall center.
-    const wallThick = 0.002 + 0.003; // frame half-depth (0.002) + clearance from inner wall face
+    const wallThick = 0.007 + 0.028; // frame half-depth (0.007) + 28mm clearance = 35mm proud of wall, casts shadow
     // wallOffset slides the sign left/right along the wall surface (tangent = perpendicular to normal).
     // Tangent of (nx, nz) is (-nz, nx). wallOffset is stored in metres.
     const sideOffset = it.wallOffset || 0;
@@ -812,6 +1259,10 @@ const scene3d = (() => {
       buildCage3D(W, D, H, cx, cz, rot);
       return;
     }
+
+    // Blob contact shadow — placed before the GLB branch so it appears regardless
+    // of whether the async GLB load succeeds or falls back to procedural geometry.
+    addBlobShadow(cx, cz, W, D);
 
     // ── GLB models — proxied via local server to avoid CORS ──────────
     // v=2: cache-bust so Cloudflare R2 CDN and the Python proxy both serve fresh files
@@ -1073,6 +1524,7 @@ const scene3d = (() => {
   function buildContainerFallback(it) { buildContainer(it, true); }
 
   function buildCage3D(W, D, H, cx, cz, rot) {
+    addBlobShadow(cx, cz, W, D);
     const group = new THREE.Group();
     const barR = 0.015; // bar radius
     const barMat = new THREE.MeshLambertMaterial({ color: 0x888888 });
@@ -1181,8 +1633,11 @@ const scene3d = (() => {
       // All geometry uses WALL_THICK as depth so elements span the full wall.
       // DoubleSide makes them visible from inside and outside the room.
       // _outNx/_outNy (stored on mouseup) lets us offset the group to the wall center.
-      const frameSide = new THREE.MeshLambertMaterial({ color: 0x4a3d30, side: THREE.DoubleSide });
-      const openMat   = new THREE.MeshLambertMaterial({ color: 0xc8c4be, transparent: true, opacity: 0.10, side: THREE.DoubleSide, depthWrite: false });
+      // Door frame matches wall color — architectural opening style, no brown.
+      // The door reads as a void/gap in the wall, which is cleaner than a coloured frame
+      // and consistent with how CAD/planning tools represent door openings.
+      const frameSide = new THREE.MeshLambertMaterial({ color: 0xb8b4ae, transparent: true, opacity: 0.55, side: THREE.DoubleSide, depthWrite: false });
+      const openMat   = new THREE.MeshLambertMaterial({ color: 0xffffff, transparent: true, opacity: 0.04, side: THREE.DoubleSide, depthWrite: false });
 
       if (isDoor) {
         const FRAME_W = 0.06;
@@ -1190,16 +1645,24 @@ const scene3d = (() => {
         const leafW   = (W - FRAME_W * (halves + 1)) / halves;
         const leafH   = frameH - FRAME_W;
 
-        // Frame: top rail + side stiles (+ centre stile for double door)
+        // Frame: top rail + side stiles (+ centre stile for double door) — wall-coloured
         g.add(placed(new THREE.Mesh(new THREE.BoxGeometry(W,            FRAME_W, WALL_THICK), frameSide.clone()), 0,                    frameH - FRAME_W / 2, 0));
         g.add(placed(new THREE.Mesh(new THREE.BoxGeometry(FRAME_W,      frameH,  WALL_THICK), frameSide.clone()), -W / 2 + FRAME_W / 2, frameH / 2,           0));
         g.add(placed(new THREE.Mesh(new THREE.BoxGeometry(FRAME_W,      frameH,  WALL_THICK), frameSide.clone()),  W / 2 - FRAME_W / 2, frameH / 2,           0));
         if (def.double) g.add(placed(new THREE.Mesh(new THREE.BoxGeometry(FRAME_W, frameH, WALL_THICK), frameSide.clone()), 0, frameH / 2, 0));
 
-        // Opening panel per leaf — very transparent, looks like open void in wall
+        // Opening — near-invisible panel, just enough to occlude geometry behind the gap
+        const knobMat = new THREE.MeshPhongMaterial({ color: 0xaaaaaa, shininess: 80, specular: 0x444444 });
         for (let i = 0; i < halves; i++) {
           const lx = -W / 2 + FRAME_W + leafW / 2 + i * (leafW + FRAME_W);
           g.add(placed(new THREE.Mesh(new THREE.BoxGeometry(leafW, leafH, WALL_THICK), openMat.clone()), lx, leafH / 2, 0));
+          // Door knob — on the latch side at 1.0m height.
+          // Single door: latch on the right. Double door: both leaves latch toward centre
+          // so the knobs meet in the middle (leaf 0 right, leaf 1 left).
+          const latchDir = def.double ? (i === 0 ? 1 : -1) : 1;
+          const latchX = lx + latchDir * (leafW / 2 - FRAME_W - 0.04);
+          g.add(placed(new THREE.Mesh(new THREE.SphereGeometry(0.03, 8, 8), knobMat), latchX, 1.0,  WALL_THICK / 2 + 0.01));
+          g.add(placed(new THREE.Mesh(new THREE.SphereGeometry(0.03, 8, 8), knobMat), latchX, 1.0, -WALL_THICK / 2 - 0.01));
         }
       } else {
         // Window: blue frame spanning full wall thickness, transparent glass inset
@@ -1341,5 +1804,5 @@ const scene3d = (() => {
     });
   }
 
-  return { init, rebuild, rebuildSync, preloadItemGLBs, setAngle, resize, markDirty, nudgeSkilt, captureTopDown, preloadAll, get _initialized() { return initialized; } };
+  return { init, rebuild, rebuildSync, preloadItemGLBs, setAngle, resize, markDirty, nudgeSkilt, captureTopDown, preloadAll, enterWalkMode, exitWalkMode: _exitWalkMode, get _initialized() { return initialized; } };
 })();

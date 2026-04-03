@@ -681,10 +681,12 @@ function setupEvents() {
   c.addEventListener('contextmenu', e => e.preventDefault());
   c.addEventListener('wheel', onWheel, { passive: false });
   document.addEventListener('keydown', e => {
+    if (state.walkMode) return; // walk mode owns keys
     if (e.key === 'Shift') state.shiftDown = true;
     if (e.key === ' ') { state.spaceDown = true; c.style.cursor = 'grab'; e.preventDefault(); }
   });
   document.addEventListener('keyup', e => {
+    if (state.walkMode) return;
     if (e.key === 'Shift') state.shiftDown = false;
     if (e.key === ' ') { state.spaceDown = false; if (!state.panning) c.style.cursor = ''; }
   });
@@ -703,20 +705,17 @@ function onWheel(e) {
   // Adjust pan so the point under cursor stays fixed
   state.panX += (mx - ox) * (1 - newPPM / oldPPM);
   state.panY += (my - oy) * (1 - newPPM / oldPPM);
-  document.getElementById('rbar').style.width = getPPM() + 'px';
   render();
 }
 
 function zoomBtn(dir) {
   const factor = dir > 0 ? 1.25 : 1/1.25;
   state.zoom = Math.min(Math.max(state.zoom * factor, 0.15), 8.0);
-  document.getElementById('rbar').style.width = getPPM() + 'px';
   render();
 }
 
 function resetZoom() {
   state.zoom = 1.0; state.panX = 0; state.panY = 0;
-  document.getElementById('rbar').style.width = getPPM() + 'px';
   render();
 }
 
@@ -1104,6 +1103,7 @@ function onDbl(e) {
 }
 
 function onKey(e) {
+  if (state.walkMode) return; // walk mode owns all keys while pointer-locked
   if (document.activeElement.tagName === 'INPUT' || document.activeElement.tagName === 'SELECT') return;
   // Arrow key → exact-length line input during free poly drawing
   if (state.roomMode === 'free' && state.polyDraw && !state.polyDone && state.poly.length > 0) {
@@ -1164,6 +1164,10 @@ function onKey(e) {
 
 // ── View ──────────────────────────────────────────────────────────────────
 function setView(v, btn) {
+  // Exit walk mode cleanly before leaving 3D — pointerlockchange fires _exitWalkMode
+  if (state.walkMode && v !== '3d') {
+    if (document.exitPointerLock) document.exitPointerLock();
+  }
   state.view = v;
   document.querySelectorAll('.vb').forEach(b => {
     b.classList.toggle('act', btn ? b === btn : b.textContent.trim() === v.toUpperCase());
@@ -1174,6 +1178,8 @@ function setView(v, btn) {
   document.getElementById('tb2d').style.display = v === '2d' ? 'flex' : 'none';
   const compass = document.getElementById('cam-compass');
   if (compass) compass.style.display = v === '3d' ? 'block' : 'none';
+  const walkWrap = document.getElementById('walk-btn-wrap');
+  if (walkWrap) walkWrap.style.display = v === '3d' ? 'block' : 'none';
   if (v === '3d') {
     if (!scene3d._initialized) scene3d.init();
     // Always resize — canvas was hidden during eager init so renderer may be

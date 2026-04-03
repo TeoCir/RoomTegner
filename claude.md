@@ -4,14 +4,14 @@
 A web-based room planner for Norsk Gjenvinning (NG) where salespeople can draw waste rooms, place containers, and export a PDF quote for customers.
 
 ## Stack
-- **Backend:** FastAPI + SQLite (`app.py`), runs on port 8000
+- **Backend:** FastAPI + PostgreSQL (`app.py`), served via uvicorn
 - **Frontend:** Vanilla JS, HTML, CSS — no bundler/framework
 - **3D:** Three.js r128 with GLB models from Cloudflare R2
-- **Deploy:** Render.com (`python app.py`)
+- **Deploy:** Render.com (`uvicorn app:app --host 0.0.0.0 --port $PORT`)
 
 ## File Structure
 ```
-app.py                  ← FastAPI REST API + SQLite + /r2/ proxy for Cloudflare R2
+app.py                  ← FastAPI REST API + PostgreSQL + /r2/ proxy for Cloudflare R2
 static/
   index.html
   css/style.css
@@ -47,6 +47,31 @@ static/
 - Signs store `_wallNx/Ny/X/Y` for 3D placement
 - Signs follow their container during drag (`_linkedTo: container.id`)
 
+## Item Kinds
+Every object in `state.items` has a `kind` field:
+- `'container'` — Waste bin (140L–1000L, etc.)
+- `'cage'` — EE-avfall cage / rollcage
+- `'machine'` — Industrial equipment (Orwak, EnviroPac, APS800, etc.)
+- `'compactor'` — Compactor machines (Balex, Orwak)
+- `'wall'` — Wall element: door, door-double, window, pillar, exit
+- `'skilt'` — Sorting sign (sortere.no PNG icon on white frame)
+- `'note'` — Sticky note (yellow rect with text)
+- `'exit'` — Emergency exit marker (green sign)
+- `'innerwall'` — Interior partition wall drawn with the inner wall tool
+
+## Keyboard Shortcuts
+| Key | Action |
+|-----|--------|
+| Ctrl+Z | Undo: pop last poly point while drawing, or delete last placed item |
+| Delete / Backspace | Delete selected item |
+| R | Rotate selected item 90° |
+| Escape | Cancel active action (poly/container/sign/innerwall), or deselect |
+| Shift | Lock poly segment to 0° or 90° while drawing |
+| Space | Hold to pan (grab-cursor mode) |
+| Arrow keys (2D) | Trigger precise segment-length input while drawing poly |
+| Arrow keys (3D) | Strafe / pan camera |
+| +/- (3D) | Zoom in / out |
+
 ## State (important fields)
 ```js
 state.view            // '2d' | '3d'
@@ -67,6 +92,10 @@ state.customer        // customer name for PDF
 state.rooms           // [{id, name, data}] — multi-room array
 state.activeRoom      // index into state.rooms
 state._pdfExporting   // true only during PDF snapshot — suppresses UI overlays
+state.readOnly        // true in share-link mode — blocks all edits, applyReadOnly() hides UI
+state.nextId          // auto-increment counter; assigned to each new item; recalculated on fromJSON
+state.innerWallStart  // {x, y} | null — start point while drawing an inner partition wall
+state.innerWallHover  // {x, y} | null — current cursor target for innerwall preview line
 ```
 
 ## External Resources
@@ -80,6 +109,51 @@ All Cloudflare R2 assets are served through the local `/r2/<filename>` proxy in 
 ## Known Ongoing Issues
 - No touch support for 3D orbit
 - `overlayFraksjonIcons()` is written but currently disabled in `generatePDF()` — coordinate mapping from 3D scene to top-down image pixels is not yet verified (comment in app.js line ~1434)
+
+---
+
+## Additional Features
+
+### Autosave (localStorage)
+Every change schedules a debounced save (`AUTOSAVE_KEY = 'roomtegner_draft'`, 800ms delay) to localStorage. On load, if a draft exists and no `?code=` URL param, a recovery banner appears so the user can restore or discard the previous session. Autosave is disabled in read-only share-link mode.
+
+### SELLER_PIN / PIN overlay
+If the `SELLER_PIN` env var is set in `app.py`, the frontend receives it as `window.SELLER_PIN`. On load, `checkPin()` shows a full-screen overlay prompting for the PIN. Auth is stored in `sessionStorage` (not persistent). Share-link visitors (`?code=`) bypass the PIN entirely — `app.py` injects an empty PIN for public routes.
+
+### Inner Wall Tool (`kind: 'innerwall'`)
+The inner wall tool (`state.tool = 'innerwall'`) lets users draw interior partition walls. Clicking sets `state.innerWallStart`; clicking again commits the segment. Snaps to 0.1m grid and 0.15m radius to existing inner wall endpoints. Inner walls participate in container wall-snap (`innerWallCandidates()` included in `nearestWall()`).
+
+### Arrow-Key Precision Input
+While drawing a freehand polygon, pressing an arrow key (←↑→↓) opens a floating input field near the last point (`showArrowInput()`). The user types an exact length in metres; the new point is placed in that direction. If the resulting point is within 0.2m of the start, the room closes automatically.
+
+### 3D Camera Compass & Angle Presets
+`render3d.setAngle(a)` supports 8 presets: `'iso-ne'`, `'iso-nw'`, `'iso-se'`, `'iso-sw'`, `'top'`, `'front'`, `'side-r'`, `'side-l'`. The compass widget (collapsed trigger, expands on hover) in the 3D view maps these to clickable buttons.
+
+### Sign Nudging in 3D
+When a sorting sign is selected in 3D mode, a control panel appears at the bottom with arrow buttons (◀▶▲▼). Each click calls `scene3d.nudgeSkilt(id, dir)` and adjusts the sign's wall offset or height by 0.05m. Height is displayed in metres.
+
+### Share Code — Export & Read-Only Import
+Sellers can export a sketch as a 6-character share code via the **Share** button (calls `POST /api/sketches/{id}/share`, auth required). This generates or retrieves the code, stored in the `share_code` DB column.
+
+Anyone can view the sketch by entering the code in the **Import Code** dialog (`importByCode()`) or via a direct URL (`?code=XXXXXX`). The public endpoint (`GET /public/{code}`, no auth) returns the sketch data; the frontend loads it with `state.readOnly = true` + `applyReadOnly()`, which hides all edit UI and adds a fixed read-only banner. No edits, saves, or exports are possible for the viewer.
+
+The share code persists indefinitely — there is no expiry or revocation currently.
+
+---
+
+## Development Rules (Quick Reference)
+These patterns are derived from the Decision Log. The full context is there — this is the short version for day-to-day use.
+
+| Rule | Where |
+|------|-------|
+| **Never call `scene3d.rebuild()` in `mousemove`** — only on `mouseup` or explicit action | `app.js` onMM |
+| **All new `<canvas>` elements must apply `devicePixelRatio` scaling at init** | `render2d.js` reference |
+| **Never access `state.rooms[n].data` directly** — always call `fromJSON()` first | `state.js` |
+| **Never use `con.execute()` in Python** — always `cur = con.cursor(); cur.execute(...); con.commit(); cur.close(); con.close()` | `app.py` |
+| **Never hard-code the R2 URL** — always use `/r2/<filename>` | `data.js`, `app.py` |
+| **All new backend API routes must be under `/api/`** — they inherit the `X-API-Key` auth middleware automatically | `app.py` |
+| **`nearestWall()` returns the polygon boundary = inner wall face** — do not add `WALL_THICK/2` when offsetting signs from `_wallX/_wallY` | `render3d.js buildSkilt3D` |
+| **Thumbnails must use `image/jpeg` with a quality param** — the quality param is silently ignored for PNG | `app.js generatePDF` |
 
 ---
 
@@ -183,6 +257,20 @@ All Cloudflare R2 assets are served through the local `/r2/<filename>` proxy in 
 **Decision:** Simple API key header check (`X-API-Key`) on all `/api/` endpoints via a FastAPI dependency.
 **Why:** Simple and sufficient for internal use. Avoids the complexity of OAuth/JWT for this use case.
 **Pattern:** All new API routes must go under `/api/` and will inherit the auth middleware automatically.
+
+---
+
+### 3D realism improvements — 2026
+**Problem:** The room looked fake/toy-like when zoomed out: flat floor with no texture, narrow FOV, no atmospheric depth, sharp wall-floor joints, flat inner wall shading.
+**Decision:** Six targeted changes to `render3d.js`, all avoiding extra render passes or shadow-map cost:
+1. **FOV 45° → 58°** — matches what RoomSketcher/Planner 5D use; feels photographic.
+2. **FogExp2** (density 0.018, matching background colour) — atmospheric depth at distance.
+3. **Floor tile texture** — canvas-generated 512×512 texture (polished concrete, subtle grout lines) set to `RepeatWrapping` with `repeat=(W,D)` for 1 tile per metre. Cached as a module-level `_floorTex`; only the `repeat` vector is changed per rebuild (no GPU re-upload). Works in both rect (BoxGeometry UV) and free mode (ShapeGeometry UV from bounding box).
+4. **Baseboard geometry** — 8cm tall, 2.5cm deep strip along every wall-floor junction. `receiveShadow=true`, `castShadow=false` — gets a shadow line at the base without costing a shadow-map draw call.
+5. **Inner wall faces Lambert → MeshStandardMaterial** — the transparent outer wall shells stay Lambert (barely visible at 38% opacity; PBR cost not justified). Only the opaque inner face planes upgrade to Standard so directional lights produce a visible gradient across the wall surface.
+6. **Blob contact shadows** — radial-gradient plane (128×128, cached as `_blobTex`) placed at y=0.002 under each container and cage. `depthWrite=false` blends with the floor. Zero shadow-map cost.
+**Why:** SSAO was considered but rejected: it requires 4 render passes (G-buffer + SSAO + blur + composite), and transparent walls break the depth buffer causing halos. The blob shadow + baseboard shadow combo achieves a similar "grounded" look for near-zero GPU cost.
+**Pattern:** `_floorTex` and `_blobTex` are module-level singletons — never recreate them in `_doRebuild`. Only set `.repeat` on `_floorTex` before applying it to the floor material.
 
 ---
 

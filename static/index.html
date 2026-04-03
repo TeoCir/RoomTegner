@@ -177,6 +177,20 @@
       <span style="font-size:10px;color:#aaa;white-space:nowrap">H: <span id="skilt3d-h-lbl">1.50m</span></span>
     </div>
 
+    <!-- Walk mode HUD — shown while pointer is locked in first-person walk mode -->
+    <div id="walk-hud" style="display:none;position:absolute;top:16px;left:50%;transform:translateX(-50%);background:rgba(28,26,24,0.88);color:#f0ede8;border-radius:10px;padding:8px 16px;font-size:12px;font-weight:500;z-index:30;backdrop-filter:blur(6px);white-space:nowrap"></div>
+
+    <!-- Walk mode button — shown next to compass in 3D view -->
+    <div id="walk-btn-wrap" style="display:none;position:absolute;bottom:14px;left:66px;z-index:20">
+      <button class="cc-trigger" onclick="scene3d.enterWalkMode()" title="Gå gjennom rommet (Walk mode)">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="13" cy="4" r="2"/>
+          <path d="m9 20 3-7 2 2 1-5"/>
+          <path d="m8 13 2-5 4 2 2 5"/>
+        </svg>
+      </button>
+    </div>
+
     <!-- Camera angle compass — collapsed to trigger button, expands on hover -->
     <div id="cam-compass" style="display:none">
       <button class="cc-trigger" title="Kameravisning">⊕</button>
@@ -204,7 +218,7 @@
     </div>
 
     <div class="ib" id="ib">Velg <b>Beholdere</b> i sidepanelet og klikk <b>+</b> for å plassere</div>
-    <div class="sr"><div class="rbar" id="rbar" style="width:80px"></div><div class="rlbl" id="rlbl">1 m</div></div>
+
   </div>
   </div><!-- /canvas-col -->
 

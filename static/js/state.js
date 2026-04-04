@@ -15,7 +15,7 @@ const state = {
   sketchId: null,
   sketchName: 'Ny skisse',
   customer: '',
-  drag: null, dox: 0, doy: 0,
+  drag: null, dox: 0, doy: 0, drag3dOffset: { x: 0, z: 0 },
   rotat: null, rsa: 0, rsi: 0,
   activeFraksjon: 'rest', // persists across adds — user picks once, all new bins inherit it
   pendingContainer: null,    // { defId, def } while a container is floating under the mouse

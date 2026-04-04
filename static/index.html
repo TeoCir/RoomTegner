@@ -312,7 +312,7 @@
   <button class="btn-icon" onclick="document.getElementById('autosave-banner').style.display='none'" title="Lukk" style="font-size:16px;color:var(--muted)">×</button>
 </div>
 
-<script>window.API_KEY = "{{ api_key }}"; window.SELLER_PIN = "{{ seller_pin }}";</script>
+<script>window.PIN_REQUIRED = {{ pin_required }};</script>
 <script src="/static/js/three.min.js"></script>
 <script src="/static/js/GLTFLoader.js"></script>
 <script src="/static/js/jspdf.umd.min.js"></script>

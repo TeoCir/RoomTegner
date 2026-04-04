@@ -28,7 +28,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; "
-            "script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; "
+            "script-src 'self' 'unsafe-inline'; "
             "style-src 'self' 'unsafe-inline'; "
             "img-src 'self' data: blob: https://pub-27fd45166dba4be8a488b48df57742df.r2.dev https://www.grontpunkt.no; "
             "connect-src 'self' blob:; "
@@ -72,6 +72,16 @@ def init_db():
     con.close()
 
 init_db()
+
+class AuthIn(BaseModel):
+    pin: str
+
+@app.post("/api/auth")
+def auth_endpoint(body: AuthIn):
+    """Verify SELLER_PIN and return the API key. Never expose the key in page HTML."""
+    if not SELLER_PIN or body.pin != SELLER_PIN:
+        raise HTTPException(status_code=401, detail="Feil PIN")
+    return {"key": API_KEY}
 
 class SketchIn(BaseModel):
     name: str
@@ -235,16 +245,15 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 @app.get("/{full_path:path}")
 def serve_spa(request: Request, full_path: str = ""):
-    # Don't expose the API key to share-link visitors (?code=XXXX).
-    # They only need api.getPublic() which has no auth — injecting the real key
-    # would let them list/create/delete sketches via DevTools.
+    # Only tell the frontend whether a PIN is required — never expose the key or PIN value.
+    # Sellers authenticate via POST /api/auth (PIN → key) and store the key in sessionStorage.
+    # Share-link visitors (?code=) never see a PIN prompt.
     is_share = bool(request.query_params.get("code"))
-    key = "" if is_share else API_KEY
-    pin = "" if is_share else SELLER_PIN
+    pin_required = "true" if (bool(SELLER_PIN) and not is_share) else "false"
     return templates.TemplateResponse(
         request=request,
         name="index.html",
-        context={"request": request, "api_key": key, "seller_pin": pin},
+        context={"request": request, "pin_required": pin_required},
     )
 
 if __name__ == "__main__":

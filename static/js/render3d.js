@@ -43,7 +43,10 @@ const scene3d = (() => {
       model.updateMatrixWorld(true);
       const box = new THREE.Box3().setFromObject(model);
       const size = box.getSize(new THREE.Vector3());
-      // Scale to exact NG dimensions
+      // Scale to exact declared dimensions.
+      // Axis alignment is handled per-model via glbModelRotY (applied above before bbox
+      // measurement) — after that rotation X = room width, Z = room depth, so we can
+      // assign targetW→X and targetD→Z directly without any auto-detect heuristic.
       model.scale.set(targetW / size.x, targetH / size.y, targetD / size.z);
       model.updateMatrixWorld(true);
       // Store at origin — position applied per instance
@@ -66,19 +69,28 @@ const scene3d = (() => {
     pitch: 0,         // vertical look angle (radians, clamped ±70° = ±1.22 rad)
     x: 0,             // camera position Three.js X
     z: 0,             // camera position Three.js Z
-    EYE_H: 1.6,       // eye height in metres
+    EYE_H: 1.64,      // eye height in metres (~1.74m avg Norwegian height - 0.10m)
     SPEED: 2.0,       // movement speed m/s
     keysHeld: {},     // {key: true} while held — cleared on exit
     lastTime: 0,      // ms timestamp for delta-time movement
   };
 
-  let _skiltMeshMap = []; // maps mesh → item id for raycasting
+  let _skiltMeshMap = []; // maps mesh → item id for raycasting (signs only)
+  let _itemMeshMap  = []; // maps mesh → item for 3D drag raycasting (containers, cages, machines)
+
+  // Cached Three.js objects for 3D drag — allocated once to avoid GC pressure on mousemove.
+  // Floor plane at y=0, normal pointing up. Intersection gives world-space XZ position.
+  const _drag3dRaycaster  = new THREE.Raycaster();
+  const _drag3dFloorPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+  const _drag3dHitVec     = new THREE.Vector3();
+  const _drag3dMouseNDC   = new THREE.Vector2();
 
   function initOrbit() {
     const el = renderer.domElement;
     let didDrag = false;
     el.addEventListener('mousedown', e => {
       if (walk.active) return; // walk mode owns the canvas — don't activate orbit drag
+      if (state.drag) return;  // 3D object drag owns this mousedown — initDrag3D fires first and sets state.drag
       if (e.button === 0) {
         orbit.active = true; orbit.lastX = e.clientX; orbit.lastY = e.clientY;
         el.style.cursor = 'grabbing'; didDrag = false;
@@ -86,7 +98,7 @@ const scene3d = (() => {
     });
     el.addEventListener('mouseup', e => {
       orbit.active = false; el.style.cursor = 'grab';
-      if (!didDrag) trySelectSkilt(e);
+      if (!didDrag && !state.drag) trySelectSkilt(e); // skip sign selection if an object drag just ended
     });
     el.addEventListener('mouseleave', () => { orbit.active = false; el.style.cursor = 'grab'; });
     el.addEventListener('mousemove', e => {
@@ -133,6 +145,105 @@ const scene3d = (() => {
     });
   }
 
+  // ── 3D object drag ──────────────────────────────────────────────────────────
+  // Drag containers/cages/machines along the floor plane using a THREE.Raycaster.
+  // Must be registered BEFORE initOrbit() so this mousedown fires first; the orbit
+  // mousedown checks state.drag and skips if an object drag is already in progress.
+  //
+  // Performance: mousemove only does a ray–plane intersection (O(1) math) and a direct
+  // mesh.position write. No rebuild — the rAF loop renders the updated position every frame.
+  // rebuild() is deferred to mouseup via the document-level handler in app.js.
+  function initDrag3D() {
+    const el = renderer.domElement;
+
+    // Resolves a raycaster hit object back to the _itemMeshMap entry by walking up
+    // the parent chain. GLB containers wrap the model in a Group, so hit.object is a
+    // deep child — we need to find the root wrapper that we track.
+    function resolveItem3D(obj) {
+      let o = obj;
+      while (o) {
+        const entry = _itemMeshMap.find(e => e.mesh === o);
+        if (entry) return entry;
+        o = o.parent;
+      }
+      return null;
+    }
+
+    el.addEventListener('mousedown', e => {
+      if (walk.active || e.button !== 0) return;
+      if (state.readOnly) return;
+
+      const rect = el.getBoundingClientRect();
+      _drag3dMouseNDC.set(
+        ((e.clientX - rect.left) / rect.width)  *  2 - 1,
+        -((e.clientY - rect.top)  / rect.height) *  2 + 1
+      );
+      _drag3dRaycaster.setFromCamera(_drag3dMouseNDC, camera);
+
+      // Raycast against all tracked item meshes
+      const targets = _itemMeshMap.map(m => m.mesh);
+      if (!targets.length) return;
+      const hits = _drag3dRaycaster.intersectObjects(targets, true);
+      if (!hits.length) return;
+
+      const entry = resolveItem3D(hits[0].object);
+      if (!entry) return;
+
+      // Intersect the floor plane to get the world-space click point.
+      // Store the offset (object centre – floor hit) so the object doesn't
+      // jump to the cursor on the first mousemove.
+      if (!_drag3dRaycaster.ray.intersectPlane(_drag3dFloorPlane, _drag3dHitVec)) return;
+      state.drag3dOffset.x = entry.item.x - _drag3dHitVec.x;
+      state.drag3dOffset.z = entry.item.y - _drag3dHitVec.z;
+
+      state.drag         = entry.item;
+      state._drag3dMesh  = entry.mesh;
+      state.sel          = entry.item.id;
+      updateDP();
+      // Do NOT stopPropagation — orbit mousedown fires after this (registered later)
+      // and skips when state.drag is set (see guard in initOrbit).
+    });
+
+    el.addEventListener('mousemove', e => {
+      if (!state.drag || !state._drag3dMesh || walk.active) return;
+
+      const rect = el.getBoundingClientRect();
+      _drag3dMouseNDC.set(
+        ((e.clientX - rect.left) / rect.width)  *  2 - 1,
+        -((e.clientY - rect.top)  / rect.height) *  2 + 1
+      );
+      _drag3dRaycaster.setFromCamera(_drag3dMouseNDC, camera);
+      if (!_drag3dRaycaster.ray.intersectPlane(_drag3dFloorPlane, _drag3dHitVec)) return;
+
+      // New position = floor hit + original click offset
+      state.drag.x = _drag3dHitVec.x + state.drag3dOffset.x;
+      state.drag.y = _drag3dHitVec.z + state.drag3dOffset.z;
+
+      // Wall snapping — reuses the same logic as 2D drag (snapToWall is a global in app.js)
+      if (state.drag.def) {
+        const W2  = state.drag.def.W / 1000 / 2;
+        const D2  = state.drag.def.D / 1000 / 2;
+        const rot = state.drag.rot || 0;
+        const c   = Math.abs(Math.cos(rot)), s = Math.abs(Math.sin(rot));
+        const snapped = snapToWall(state.drag.x, state.drag.y, W2*c + D2*s, W2*s + D2*c);
+        state.drag.x = snapped.x;
+        state.drag.y = snapped.y;
+      }
+
+      // Update mesh position directly — no rebuild needed.
+      // The rAF loop in animate() renders the new position on the next frame.
+      state._drag3dMesh.position.x = state.drag.x;
+      state._drag3dMesh.position.z = state.drag.y;
+
+      // Keep the 2D canvas in sync during drag
+      scheduleRender2D();
+    });
+
+    // No separate mouseup handler here — the document-level mouseup in app.js
+    // fires for all mouse events (including on the 3D canvas), clears state.drag,
+    // runs post-drop logic (auto-rotate, linked signs), and calls render() → rebuild().
+  }
+
   // ── Walk mode input setup ─────────────────────────────────────────────────
   // Called once from init(). Sets up Pointer Lock + mouse-look + key-held tracking.
   // All handlers guard on walk.active so they are silent outside walk mode.
@@ -151,6 +262,7 @@ const scene3d = (() => {
           hud.style.pointerEvents = 'none';
           hud.style.cursor = '';
         }
+        rebuild(); // adds ceiling + ceiling lights for walk mode
       } else {
         // Lock lost (Escape or document.exitPointerLock()) — exit walk cleanly
         _exitWalkMode();
@@ -266,6 +378,7 @@ const scene3d = (() => {
     walk.keysHeld = {};
     state.walkMode = false;
     _showWalkHUD(false);
+    rebuild(); // removes ceiling + ceiling lights now that walk mode is off
     // Restore orbit camera (orbit state was never touched by walk mode)
     if (camera) updateOrbitCamera();
   }
@@ -381,6 +494,7 @@ const scene3d = (() => {
     // so the room feels photographic rather than toy-like.
     camera = new THREE.PerspectiveCamera(58, W / H, 0.1, 200);
     resetOrbit();
+    initDrag3D(); // Must be before initOrbit so drag mousedown fires first and can set state.drag before orbit checks it
     initOrbit();
 
     // Lights — indoor industrial feel.
@@ -501,6 +615,7 @@ const scene3d = (() => {
       '200LFAT':     `${R2}/200L-Fat.glb`,
       '200LSEKKE':   `${R2}/200L_sekkestativ.glb`,
       'PALL':        `${R2}/pall.glb`,
+      'ORWAK3250':   `${R2}/orwak_3250.glb`,
     };
     const containers = state.items.filter(it => it.kind === 'container' && GLB_MODELS[it.def.id]);
     // Deduplicate by glbCache key so we don't fire multiple loads for the same file
@@ -518,9 +633,10 @@ const scene3d = (() => {
     unique.forEach(it => {
       const def = it.def;
       const W = def.W / 1000, D = def.D / 1000, H = def.H / 1000;
-      const [glbW, glbD] = def.glbSwapWD ? [D, W] : [W, D];
-      const glb3dD = def.glb3dD || glbD;
-      loadGLB(GLB_MODELS[def.id], glbW, H, glb3dD, def.glbModelRotY || 0, () => {
+      // Pass true W and D — loadGLB auto-detects the correct axis mapping internally.
+      // glbSwapWD on the def is no longer needed for scaling (kept as documentation only).
+      const glb3dD = def.glb3dD || D;
+      loadGLB(GLB_MODELS[def.id], W, H, glb3dD, def.glbModelRotY || 0, () => {
         done++;
         if (done === unique.length) onDone();
       }, def.glbHideMeshNames || []);
@@ -531,6 +647,7 @@ const scene3d = (() => {
     meshes.forEach(m => scene.remove(m));
     meshes = [];
     _skiltMeshMap = [];
+    _itemMeshMap  = [];
 
     buildRoom();
     state.items.forEach(it => {
@@ -569,28 +686,37 @@ const scene3d = (() => {
   // Design: warm concrete base with barely-visible grout lines at tile edges.
   // The existing LineSegments grid sits at y=0.005 and provides crisp 1m joints;
   // the texture adds surface quality (polished concrete) without doubling the lines.
-  let _floorTex = null;
+  let _floorTex = null; // reset forces regeneration when this function changes
   function getFloorTex() {
     if (_floorTex) return _floorTex;
-    const SZ = 512, GW = 2; // canvas size, grout line width (px)
+    const SZ = 512;
     const c = document.createElement('canvas');
     c.width = SZ; c.height = SZ;
     const ctx = c.getContext('2d');
-    // Tile surface — same warm concrete as the existing floor colour
-    ctx.fillStyle = '#dedad5';
+
+    // Base — mid-gray poured concrete
+    ctx.fillStyle = '#8a8a88';
     ctx.fillRect(0, 0, SZ, SZ);
-    // Subtle radial highlight: slightly brighter centre, slightly darker edges —
-    // reads as a polished/sealed concrete tile under overhead lighting.
-    const grad = ctx.createRadialGradient(SZ/2, SZ/2, SZ*0.1, SZ/2, SZ/2, SZ*0.7);
-    grad.addColorStop(0, 'rgba(255,255,255,0.05)');
-    grad.addColorStop(1, 'rgba(0,0,0,0.07)');
+
+    // Large-scale tonal variation — one side slightly lighter, gives the slab
+    // a sense of mass and uneven curing rather than a uniform painted surface.
+    const grad = ctx.createLinearGradient(0, 0, SZ, SZ);
+    grad.addColorStop(0,   'rgba(255,255,255,0.06)');
+    grad.addColorStop(0.5, 'rgba(0,0,0,0)');
+    grad.addColorStop(1,   'rgba(0,0,0,0.08)');
     ctx.fillStyle = grad;
     ctx.fillRect(0, 0, SZ, SZ);
-    // Very faint grout lines at tile edges — complement (not duplicate) the
-    // LineSegments grid that floats 5mm above the floor.
-    ctx.fillStyle = 'rgba(0,0,0,0.08)';
-    ctx.fillRect(0, 0, SZ, GW); ctx.fillRect(0, SZ-GW, SZ, GW); // top/bottom
-    ctx.fillRect(0, 0, GW, SZ); ctx.fillRect(SZ-GW, 0, GW, SZ); // left/right
+
+    // Aggregate noise — tiny lighter and darker specks simulate sand/gravel
+    // visible in real concrete. No regular pattern so it reads as a cast surface.
+    const rng = (() => { let s = 42; return () => { s = (s * 1664525 + 1013904223) & 0xffffffff; return (s >>> 0) / 0xffffffff; }; })();
+    for (let i = 0; i < 6000; i++) {
+      const x = rng() * SZ, y = rng() * SZ, r = rng() * 1.8 + 0.4;
+      ctx.fillStyle = rng() > 0.5 ? `rgba(255,255,255,${(rng()*0.07+0.02).toFixed(3)})`
+                                   : `rgba(0,0,0,${(rng()*0.08+0.02).toFixed(3)})`;
+      ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+    }
+
     _floorTex = new THREE.CanvasTexture(c);
     _floorTex.wrapS = THREE.RepeatWrapping;
     _floorTex.wrapT = THREE.RepeatWrapping;
@@ -635,7 +761,7 @@ const scene3d = (() => {
     const H = state.roomH;
     // Lambert for walls — cheaper shader, no PBR cost. Tone mapping still improves
     // the look vs. the original. MeshStandardMaterial + clone-per-wall was too costly.
-    const wallMat = new THREE.MeshLambertMaterial({ color: 0xc8c4be, transparent: true, opacity: 0.38, side: THREE.DoubleSide, depthWrite: false });
+    const wallMat = new THREE.MeshLambertMaterial({ color: 0xe0dedd, transparent: true, opacity: 0.38, side: THREE.DoubleSide, depthWrite: false });
     const edgeMat = new THREE.LineBasicMaterial({ color: 0x706c66 });
 
     // Solid inner-face plane — only visible from the room side because FrontSide
@@ -644,9 +770,7 @@ const scene3d = (() => {
     function addInnerWallFace(px, pz, w, rotY) {
       const p = new THREE.Mesh(
         new THREE.PlaneGeometry(w, H),
-        // MeshStandardMaterial: directional lights produce a visible gradient across
-        // the wall surface — Lambert was flat because it ignores roughness/metalness.
-        new THREE.MeshStandardMaterial({ color: 0xd4d0cb, roughness: 0.85 })
+        new THREE.MeshStandardMaterial({ color: 0xf0efed, roughness: 0.92 })
       );
       p.position.set(px, H / 2, pz);
       p.rotation.y = rotY;
@@ -786,35 +910,33 @@ const scene3d = (() => {
       { const ft = getFloorTex(); ft.repeat.set(W, D); }
       const floorMesh = new THREE.Mesh(
         new THREE.BoxGeometry(W, WALL_THICK, D),
-        new THREE.MeshStandardMaterial({ color: 0xdedad5, roughness: 0.65, metalness: 0, map: getFloorTex() })
+        new THREE.MeshStandardMaterial({ color: 0x8a8a88, roughness: 0.92, metalness: 0, map: getFloorTex() })
       );
       floorMesh.position.set(W/2, -WALL_THICK/2, D/2);
       floorMesh.receiveShadow = true;
       addMesh(floorMesh);
 
-      // Floor expansion joints (1m grid, darker lines)
-      const gpts = [];
-      for (let i = 0; i <= Math.ceil(W); i++) { gpts.push(i,0.005,0, i,0.005,D); }
-      for (let i = 0; i <= Math.ceil(D); i++) { gpts.push(0,0.005,i, W,0.005,i); }
-      const gg = new THREE.BufferGeometry();
-      gg.setAttribute('position', new THREE.Float32BufferAttribute(gpts, 3));
-      addMesh(new THREE.LineSegments(gg, new THREE.LineBasicMaterial({ color: 0xc4c0bc })));
 
       // 4 walls — each shifted outward by WALL_THICK/2 so the inner face aligns
       // exactly with the room boundary (0→W, 0→D). This matches the 2D snap system
       // which places container edges at those boundary coordinates.
-      const half = WALL_THICK / 2;
-      [
-        [W,          H, WALL_THICK, W/2,       H/2, -half   ], // north: inner face at z=0
-        [WALL_THICK, H, D,          -half,      H/2, D/2     ], // west:  inner face at x=0
-        [WALL_THICK, H, D,          W + half,   H/2, D/2     ], // east:  inner face at x=W
-        [W,          H, WALL_THICK, W/2,        H/2, D + half], // south: inner face at z=D
-      ].forEach(([w,h,d,px,py,pz]) => {
+      // Skipped in walk mode: the outer box inner face is coplanar with the inner
+      // PlaneGeometry, causing z-fighting at close camera range. Walk mode only
+      // needs the inner face planes — the transparent shells are for the outside view.
+      if (!walk.active) {
+        const half = WALL_THICK / 2;
+        [
+          [W,          H, WALL_THICK, W/2,       H/2, -half   ], // north: inner face at z=0
+          [WALL_THICK, H, D,          -half,      H/2, D/2     ], // west:  inner face at x=0
+          [WALL_THICK, H, D,          W + half,   H/2, D/2     ], // east:  inner face at x=W
+          [W,          H, WALL_THICK, W/2,        H/2, D + half], // south: inner face at z=D
+        ].forEach(([w,h,d,px,py,pz]) => {
           const m = new THREE.Mesh(new THREE.BoxGeometry(w,h,d), wallMat.clone());
           m.position.set(px,py,pz);
           m.receiveShadow = true;
           addMesh(m);
         });
+      }
 
 
       // Inner wall faces — solid planes visible only from inside the room.
@@ -877,61 +999,9 @@ const scene3d = (() => {
       { const ft = getFloorTex();
         const _xs = poly.map(p => p.x), _zs = poly.map(p => p.y);
         ft.repeat.set(Math.max(..._xs) - Math.min(..._xs), Math.max(..._zs) - Math.min(..._zs)); }
-      const floorMesh = new THREE.Mesh(floorShape, new THREE.MeshStandardMaterial({ color: 0xdedad5, roughness: 0.65, metalness: 0, side: THREE.DoubleSide, map: getFloorTex() }));
+      const floorMesh = new THREE.Mesh(floorShape, new THREE.MeshStandardMaterial({ color: 0x8a8a88, roughness: 0.92, metalness: 0, side: THREE.DoubleSide, map: getFloorTex() }));
       floorMesh.receiveShadow = true;
       addMesh(floorMesh);
-
-      // Floor expansion joints — same 1m tile grid as rect mode, clipped to the
-      // polygon so lines only appear inside the room (handles L-shapes, T-shapes, etc.).
-      // Each grid line is intersected against polygon edges; only interior segments drawn.
-      const xs2d = poly.map(p => p.x), zs2d = poly.map(p => p.y);
-      const minX = Math.min(...xs2d), maxX = Math.max(...xs2d);
-      const minZ = Math.min(...zs2d), maxZ = Math.max(...zs2d);
-
-      // Returns sorted X intercepts of a horizontal line at z=zVal with the polygon.
-      // Each pair of intercepts [x0,x1] delimits an interior segment.
-      function clipHLine(zVal) {
-        const hits = [];
-        for (let i = 0; i < poly.length; i++) {
-          const a = poly[i], b = poly[(i+1) % poly.length];
-          if ((a.y <= zVal && b.y > zVal) || (b.y <= zVal && a.y > zVal)) {
-            const t = (zVal - a.y) / (b.y - a.y);
-            hits.push(a.x + t * (b.x - a.x));
-          }
-        }
-        return hits.sort((a, b) => a - b);
-      }
-      // Returns sorted Z intercepts of a vertical line at x=xVal with the polygon.
-      function clipVLine(xVal) {
-        const hits = [];
-        for (let i = 0; i < poly.length; i++) {
-          const a = poly[i], b = poly[(i+1) % poly.length];
-          if ((a.x <= xVal && b.x > xVal) || (b.x <= xVal && a.x > xVal)) {
-            const t = (xVal - a.x) / (b.x - a.x);
-            hits.push(a.y + t * (b.y - a.y));
-          }
-        }
-        return hits.sort((a, b) => a - b);
-      }
-
-      const gpts = [];
-      // Horizontal lines (constant z)
-      for (let z = Math.ceil(minZ); z <= Math.floor(maxZ); z++) {
-        const hits = clipHLine(z);
-        for (let j = 0; j + 1 < hits.length; j += 2)
-          gpts.push(hits[j], 0.005, z, hits[j+1], 0.005, z);
-      }
-      // Vertical lines (constant x)
-      for (let x = Math.ceil(minX); x <= Math.floor(maxX); x++) {
-        const hits = clipVLine(x);
-        for (let j = 0; j + 1 < hits.length; j += 2)
-          gpts.push(x, 0.005, hits[j], x, 0.005, hits[j+1]);
-      }
-      if (gpts.length) {
-        const gg = new THREE.BufferGeometry();
-        gg.setAttribute('position', new THREE.Float32BufferAttribute(gpts, 3));
-        addMesh(new THREE.LineSegments(gg, new THREE.LineBasicMaterial({ color: 0xc4c0bc })));
-      }
 
       // Walls — one per polygon edge, shifted outward by WALL_THICK/2 so inner
       // faces align with the polygon boundary (same coords as the 2D snap system).
@@ -950,15 +1020,18 @@ const scene3d = (() => {
         // Inward normal = (windSign*-dz/len, windSign*dx/len); outward = negated.
         const outNx = windSign * dz / len;
         const outNz = -windSign * dx / len;
-        const wallGeo = new THREE.BoxGeometry(len, H, WALL_THICK);
-        const wall = new THREE.Mesh(wallGeo, wallMat.clone());
-        wall.position.set(
-          (a.x + b.x) / 2 + outNx * WALL_THICK / 2,
-          H / 2,
-          (a.y + b.y) / 2 + outNz * WALL_THICK / 2
-        );
-        wall.rotation.y = -Math.atan2(dz, dx);
-        addMesh(wall);
+        // Outer shell skipped in walk mode — coplanar with inner face plane → z-fighting.
+        if (!walk.active) {
+          const wallGeo = new THREE.BoxGeometry(len, H, WALL_THICK);
+          const wall = new THREE.Mesh(wallGeo, wallMat.clone());
+          wall.position.set(
+            (a.x + b.x) / 2 + outNx * WALL_THICK / 2,
+            H / 2,
+            (a.y + b.y) / 2 + outNz * WALL_THICK / 2
+          );
+          wall.rotation.y = -Math.atan2(dz, dx);
+          addMesh(wall);
+        }
         // Inner face at the polygon boundary (no outward offset). For windSign=1 the
         // wall's rotation already makes the plane normal point inward; flip π for CW.
         addInnerWallFace(
@@ -994,18 +1067,96 @@ const scene3d = (() => {
         addMesh(new THREE.Line(eg, edgeMat));
       }
 
-      // Corner caps — a WALL_THICK×H×WALL_THICK cube at each vertex fills the gap
-      // (or overlap) between adjacent rotated wall boxes. Works at any angle; no
-      // rotation needed since the cap is square in XZ. Same wallMat as the walls.
-      for (const p of poly) {
-        const cap = new THREE.Mesh(new THREE.BoxGeometry(WALL_THICK, H, WALL_THICK), wallMat.clone());
-        cap.position.set(p.x, H / 2, p.y);
-        addMesh(cap);
+      // Corner caps — skipped in walk mode for the same z-fighting reason as outer walls.
+      if (!walk.active) {
+        for (const p of poly) {
+          const cap = new THREE.Mesh(new THREE.BoxGeometry(WALL_THICK, H, WALL_THICK), wallMat.clone());
+          cap.position.set(p.x, H / 2, p.y);
+          addMesh(cap);
+        }
       }
 
       // Orbit is initialized in resetOrbit() / setAngle() — not here.
       // Modifying orbit inside buildRoom() resets the camera on every rebuild
       // (e.g. nudgeSkilt), which would undo any user camera positioning.
+    }
+
+    // ── Walk-mode ceiling + fluorescent tube lights ──────────────────────
+    // Only added when walk.active so the isometric/orbit view stays open-topped
+    // (UX rule: no ceiling in orbit mode). Also absent during PDF export since
+    // walk.active is always false during rebuildSync(). rebuild() is called on
+    // walk mode enter/exit so this block is evaluated with the correct flag.
+    if (walk.active) {
+      const ceilMat = new THREE.MeshStandardMaterial({ color: 0xf0efed, roughness: 0.92, side: THREE.DoubleSide });
+
+      // Ceiling plane — mirrors the floor geometry exactly but at y = H.
+      if (state.roomMode === 'rect') {
+        const W = state.roomW, D = state.roomD;
+        const ceil = new THREE.Mesh(new THREE.PlaneGeometry(W, D), ceilMat);
+        ceil.rotation.x = Math.PI / 2; // normal points downward into room
+        ceil.position.set(W / 2, H, D / 2);
+        addMesh(ceil);
+      } else if (state.roomMode === 'free' && state.polyDone && state.poly.length > 2) {
+        const poly = state.poly;
+        const ceilShape = new THREE.Shape();
+        ceilShape.moveTo(poly[0].x, poly[0].y);
+        for (let i = 1; i < poly.length; i++) ceilShape.lineTo(poly[i].x, poly[i].y);
+        ceilShape.closePath();
+        const ceilGeo = new THREE.ShapeGeometry(ceilShape);
+        const posA = ceilGeo.attributes.position;
+        for (let i = 0; i < posA.count; i++) {
+          const x = posA.getX(i), y = posA.getY(i);
+          posA.setXYZ(i, x, H, y); // XZ plane at ceiling height
+        }
+        posA.needsUpdate = true;
+        ceilGeo.computeVertexNormals();
+        addMesh(new THREE.Mesh(ceilGeo, ceilMat));
+      }
+
+      // Walk-mode lighting: rely on ceiling fixtures for illumination rather than
+      // a blanket ambient boost. A small ambient lifts only the deep shadows so
+      // corners don't go pitch black, but fixture PointLights do the heavy work —
+      // this gives visible pools of light under each armature instead of flat fill.
+      addMesh(new THREE.AmbientLight(0xfff8f0, 0.18));
+
+      // Fluorescent tube fixtures — evenly spaced grid across the ceiling.
+      // Tubes run parallel to the Z axis (depth of room); rows spaced along X.
+      // Capped at 12 fixtures to bound per-fragment PointLight cost.
+      const bbW = bbMaxX - bbMinX, bbD = bbMaxZ - bbMinZ;
+      const numCols = Math.max(1, Math.round(bbW / 3.0));
+      const numRows = Math.max(1, Math.round(bbD / 2.5));
+      const total = Math.min(numCols * numRows, 12);
+      const stepX = bbW / (numCols + 1);
+      const stepZ = bbD / (numRows + 1);
+      const tubeMat = new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: 0xfff8e0, emissiveIntensity: 1.5 });
+      const backMat = new THREE.MeshStandardMaterial({ color: 0xd8d6d4, roughness: 0.6, metalness: 0.2 });
+      let fixtureCount = 0;
+      outer: for (let col = 1; col <= numCols; col++) {
+        for (let row = 1; row <= numRows; row++) {
+          if (fixtureCount >= total) break outer;
+          const fx = bbMinX + stepX * col;
+          const fz = bbMinZ + stepZ * row;
+          const fy = H - 0.03;
+          // Aluminium backing plate
+          const back = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.02, 1.55), backMat);
+          back.position.set(fx, fy, fz);
+          addMesh(back);
+          // Emissive tube — brighter emissive so the armature reads as a light source
+          const tube = new THREE.Mesh(new THREE.BoxGeometry(0.10, 0.05, 1.40), tubeMat);
+          tube.position.set(fx, fy - 0.03, fz);
+          addMesh(tube);
+          // Two PointLights per fixture: one tight (strong, close range) + one wide (soft fill).
+          // Together they produce a bright pool directly below the tube that falls off naturally
+          // toward walls and corners — avoids the flat uniform look of a single wide light.
+          const plClose = new THREE.PointLight(0xfffaf0, 1.2, 4);
+          plClose.position.set(fx, H - 0.12, fz);
+          addMesh(plClose);
+          const plWide = new THREE.PointLight(0xfff5e0, 0.4, 9);
+          plWide.position.set(fx, H - 0.20, fz);
+          addMesh(plWide);
+          fixtureCount++;
+        }
+      }
     }
 
     // Inner partition walls — drawn by the user with the 'innerwall' tool.
@@ -1256,7 +1407,8 @@ const scene3d = (() => {
     const rot = it.rot || 0;
 
     if (def.type === 'cage' || def.type === 'rollcage') {
-      buildCage3D(W, D, H, cx, cz, rot);
+      const mesh = buildCage3D(W, D, H, cx, cz, rot);
+      _itemMeshMap.push({ id: it.id, item: it, mesh });
       return;
     }
 
@@ -1290,19 +1442,17 @@ const scene3d = (() => {
       '200LFAT':     `${R2}/200L-Fat.glb`,
       '200LSEKKE':   `${R2}/200L_sekkestativ.glb`,
       'PALL':        `${R2}/pall.glb`,
+      'ORWAK3250':   `${R2}/orwak_3250.glb`,
     };
 
     if (!skipGLB && GLB_MODELS[def.id]) {
-      // glbSwapWD: some GLBs have their width/depth axes transposed relative to our
-      // convention (Three.js X = room width, Z = room depth). Swapping here fixes 3D
-      // scaling without touching the 2D footprint which uses the DEFS values directly.
-      const [glbW, glbD] = def.glbSwapWD ? [D, W] : [W, D];
-      // glb3dD: overrides targetD for loadGLB only — used when the GLB bounding box
-      // in Z is larger than D (e.g. door baked open inflates depth). Setting glb3dD to
-      // the raw GLB Z extent gives scale.z=1 (no compression), so the machine body
-      // renders at correct depth. 2D footprint still uses D from DEFS unchanged.
-      const glb3dD = def.glb3dD || glbD;
-      loadGLB(GLB_MODELS[def.id], glbW, H, glb3dD, def.glbModelRotY || 0, (model) => {
+      // Pass true W and D — loadGLB auto-detects the correct X/Z axis mapping by
+      // comparing the GLB's natural bounding-box proportions to targetW/targetD.
+      // glbSwapWD on the def is no longer used for scaling (kept as documentation only).
+      // glb3dD: overrides targetD when the GLB Z bbox is larger than the physical depth
+      // (e.g. baked-open door). 2D footprint still uses D from DEFS unchanged.
+      const glb3dD = def.glb3dD || D;
+      loadGLB(GLB_MODELS[def.id], W, H, glb3dD, def.glbModelRotY || 0, (model) => {
         if (!model) {
           buildContainerFallback(it); return;
         }
@@ -1372,6 +1522,7 @@ const scene3d = (() => {
         wrapper.rotation.y = Math.PI - rot + (def.glbExtraWrapperRot || 0);
         setShadow(wrapper, false, false);
         addMesh(wrapper);
+        _itemMeshMap.push({ id: it.id, item: it, mesh: wrapper });
       }, def.glbHideMeshNames || []);
       return;
     }
@@ -1518,6 +1669,7 @@ const scene3d = (() => {
     group.rotation.y = -rot;
     setShadow(group, false, false);
     addMesh(group);
+    _itemMeshMap.push({ id: it.id, item: it, mesh: group });
   }
 
   // Alias so GLB path can fall back to hand-coded version
@@ -1615,7 +1767,7 @@ const scene3d = (() => {
     group.position.set(cx, 0, cz);
     group.rotation.y = -rot;
     setShadow(group, false, false);
-    addMesh(group);
+    return addMesh(group);
   }
 
   function buildWallEl(it) {

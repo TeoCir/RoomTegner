@@ -1,6 +1,18 @@
 const api = {
+  _key: '',
+  setKey(k) { this._key = k; },
   _headers() {
-    return { 'Content-Type': 'application/json', 'X-API-Key': window.API_KEY || '' };
+    return { 'Content-Type': 'application/json', 'X-API-Key': this._key };
+  },
+  async auth(pin) {
+    // Exchange SELLER_PIN for the API key. Never stored in window or HTML — only in sessionStorage.
+    const r = await fetch('/api/auth', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pin })
+    });
+    if (!r.ok) return null;
+    return r.json(); // {key: '...'}
   },
   async list() {
     const r = await fetch('/api/sketches', { headers: this._headers() });

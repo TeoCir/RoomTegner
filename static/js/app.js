@@ -2,18 +2,26 @@
 window.addEventListener('load', () => {
   const urlCode = new URLSearchParams(location.search).get('code');
   // Gate the seller tool behind a PIN. Share-link visitors (?code=) bypass this entirely.
-  if (!urlCode && window.SELLER_PIN && sessionStorage.getItem('seller_auth') !== '1') {
+  // window.PIN_REQUIRED is a boolean injected server-side (never the PIN value itself).
+  if (!urlCode && window.PIN_REQUIRED && sessionStorage.getItem('seller_auth') !== '1') {
     document.getElementById('pin-overlay').style.display = 'flex';
     document.getElementById('pin-input').focus();
     return; // halt all init — checkPin() calls initApp() after correct PIN
   }
+  // Restore API key from sessionStorage (set by checkPin on successful auth).
+  const savedKey = sessionStorage.getItem('seller_api_key');
+  if (savedKey) api.setKey(savedKey);
   initApp(urlCode);
 });
 
-function checkPin() {
+async function checkPin() {
   const val = document.getElementById('pin-input').value;
-  if (val === window.SELLER_PIN) {
+  const result = await api.auth(val);
+  if (result && result.key) {
+    api.setKey(result.key);
+    // Store both the auth flag and the key so page refreshes don't re-prompt.
     sessionStorage.setItem('seller_auth', '1');
+    sessionStorage.setItem('seller_api_key', result.key);
     document.getElementById('pin-overlay').style.display = 'none';
     initApp(null);
   } else {
@@ -21,6 +29,16 @@ function checkPin() {
     document.getElementById('pin-input').value = '';
     document.getElementById('pin-input').focus();
   }
+}
+
+// ── Utilities ─────────────────────────────────────────────────────────────
+function escapeHtml(s) {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 function initApp(urlCode) {
@@ -211,13 +229,16 @@ function buildSkiltList() {
   const el = document.getElementById('skilt-list'); el.innerHTML = '';
   SKILT_DEFS.forEach(s => {
     const div = document.createElement('div'); div.className = 'skilt-item';
-    div.innerHTML = `
-      <img src="${s.url}" alt="${s.name}" onerror="this.style.opacity=0.3">
-      <div class="skilt-item-info">
-        <div class="skilt-item-name">${s.name}</div>
-        <div class="skilt-item-desc">Klikk for å plassere i rom</div>
-      </div>
-      <button class="skilt-add" onclick="addSkilt('${s.id}')">+</button>`;
+    const img = document.createElement('img');
+    img.src = s.url; img.alt = s.name;
+    img.addEventListener('error', function() { this.style.opacity = '0.3'; });
+    const info = document.createElement('div'); info.className = 'skilt-item-info';
+    const nameEl = document.createElement('div'); nameEl.className = 'skilt-item-name'; nameEl.textContent = s.name;
+    const descEl = document.createElement('div'); descEl.className = 'skilt-item-desc'; descEl.textContent = 'Klikk for å plassere i rom';
+    info.appendChild(nameEl); info.appendChild(descEl);
+    const btn = document.createElement('button'); btn.className = 'skilt-add'; btn.textContent = '+';
+    btn.addEventListener('click', () => addSkilt(s.id));
+    div.appendChild(img); div.appendChild(info); div.appendChild(btn);
     el.appendChild(div);
   });
 }
@@ -277,18 +298,21 @@ function buildFraksjonPicker() {
   const el = document.getElementById('fraksjon-picker');
   if (!el) return;
   const active = state.activeFraksjon || 'rest';
-  el.innerHTML = `
-    <div class="fraksjon-label">Fraksjon</div>
-    <div class="fraksjon-chips">
-      ${FRAKSJONER.map(f => `
-        <button class="fraksjon-chip${f.id === active ? ' active' : ''}"
-                style="--chip-color:${f.color}"
-                title="${f.label}"
-                onclick="setActiveFraksjon('${f.id}')">
-          <span class="chip-dot" style="background:${f.color}"></span>
-          <span class="chip-label">${f.label}</span>
-        </button>`).join('')}
-    </div>`;
+  el.innerHTML = '';
+  const label = document.createElement('div'); label.className = 'fraksjon-label'; label.textContent = 'Fraksjon';
+  const chips = document.createElement('div'); chips.className = 'fraksjon-chips';
+  FRAKSJONER.forEach(f => {
+    const btn = document.createElement('button');
+    btn.className = 'fraksjon-chip' + (f.id === active ? ' active' : '');
+    btn.style.setProperty('--chip-color', f.color);
+    btn.title = f.label;
+    btn.addEventListener('click', () => setActiveFraksjon(f.id));
+    const dot = document.createElement('span'); dot.className = 'chip-dot'; dot.style.background = f.color;
+    const lbl = document.createElement('span'); lbl.className = 'chip-label'; lbl.textContent = f.label;
+    btn.appendChild(dot); btn.appendChild(lbl);
+    chips.appendChild(btn);
+  });
+  el.appendChild(label); el.appendChild(chips);
 }
 
 function setActiveFraksjon(id) {
@@ -307,7 +331,7 @@ function buildContainerList() {
       div.onclick = () => addContainer(d.id);
       div.innerHTML = `
         <svg class="ci-icon" viewBox="0 0 34 42">${svgIcon(d)}</svg>
-        <div class="ci-info"><div class="ci-name">${d.name}</div><div class="ci-dims">${d.W}×${d.D}×${d.H}mm</div></div>
+        <div class="ci-info"><div class="ci-name">${escapeHtml(d.name)}</div><div class="ci-dims">${d.W}×${d.D}×${d.H}mm</div></div>
         <div class="ci-add">+</div>`;
       el.appendChild(div);
     });
@@ -322,7 +346,7 @@ function buildUtstyrList() {
       div.onclick = () => addContainer(d.id);
       div.innerHTML = `
         <svg class="ci-icon" viewBox="0 0 34 42">${svgIcon(d)}</svg>
-        <div class="ci-info"><div class="ci-name">${d.name}</div><div class="ci-dims">${d.W}×${d.D}×${d.H}mm</div></div>
+        <div class="ci-info"><div class="ci-name">${escapeHtml(d.name)}</div><div class="ci-dims">${d.W}×${d.D}×${d.H}mm</div></div>
         <div class="ci-add">+</div>`;
       el.appendChild(div);
     });
@@ -530,7 +554,10 @@ function centroid(axis) {
 
 function delSel() {
   if (!state.sel) return;
-  state.items = state.items.filter(i => i.id !== state.sel);
+  state.items = state.items.filter(i =>
+    i.id !== state.sel &&
+    !(i.kind === 'skilt' && i._linkedTo === state.sel)
+  );
   state.sel = null; updateDP(); render();
 }
 
@@ -1213,7 +1240,7 @@ function updateDP() {
   // Guard: if the def is missing (e.g. corrupted save or unknown typeId), show a
   // safe fallback rather than crashing the entire panel on d.name / d.sap etc.
   if ((it.kind === 'container' || it.kind === 'wall') && !d) {
-    p.innerHTML = `<div class="em">Ukjent type (${it.typeId})</div>
+    p.innerHTML = `<div class="em">Ukjent type (${escapeHtml(String(it.typeId))})</div>
       <button class="rpb rpbd" onclick="delSel()">Slett</button>`;
     return;
   }
@@ -1233,14 +1260,14 @@ function updateDP() {
   }
 
   const rows = it.kind === 'container' || it.kind === 'wall' ? `
-    <div class="pr"><span class="pk">Type</span><span class="pv">${d.name}</span></div>
+    <div class="pr"><span class="pk">Type</span><span class="pv">${escapeHtml(d.name)}</span></div>
     ${it.kind === 'container' ? `
-    <div class="pr"><span class="pk">SAP</span><span class="pv">${d.sap}</span></div>
+    <div class="pr"><span class="pk">SAP</span><span class="pv">${escapeHtml(String(d.sap))}</span></div>
     <div class="pr"><span class="pk">B×D×H</span><span class="pv">${d.W}×${d.D}×${d.H}mm</span></div>
     ${fraksjonHtml}` : ''}
     <div class="pr"><span class="pk">Rot.</span><span class="pv">${rd}°</span></div>` :
   it.kind === 'skilt' ? `
-    <div class="pr"><span class="pk">Skilt</span><span class="pv">${it.def ? it.def.name : ''}</span></div>
+    <div class="pr"><span class="pk">Skilt</span><span class="pv">${it.def ? escapeHtml(it.def.name) : ''}</span></div>
     <div class="pr" style="flex-direction:column;align-items:flex-start;gap:4px">
       <span class="pk">Størrelse (m)</span>
       <input type="range" min="0.1" max="1.5" step="0.05" value="${it.size||0.4}"

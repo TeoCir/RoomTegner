@@ -22,6 +22,7 @@ const DEFS = [
   {id:'200LSEKKE',   name:'200L Sekkestativ',    sap:'', W:400,  D:400,  H:1100, type:'machine', wheels:0},
   {id:'200LFAT',     name:'200L Fat',            sap:'', W:585,  D:585,  H:880,  type:'machine', wheels:0},
   {id:'PALL',        name:'Europall',            sap:'', W:800,  D:1200, H:144,  type:'machine', wheels:0, defaultRot: Math.PI / 2},
+  {id:'ORWAK3250',   name:'Orwak 3250',          sap:'', W:1732, D:1036, H:2970, type:'machine', wheels:0},
 ];
 
 const WALL_EL_DEFS = {

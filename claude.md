@@ -274,6 +274,27 @@ These patterns are derived from the Decision Log. The full context is there — 
 
 ---
 
+### 3D drag via Raycaster + floor plane — 2026-04
+**Problem:** Users could only move containers/cages/machines by dragging in the 2D canvas. Dragging in the 3D view had no effect.
+**Decision:** `initDrag3D()` in `render3d.js` registers mousedown/mousemove on the renderer canvas. On mousedown, a `THREE.Raycaster` hits `_itemMeshMap` (all draggable items); a ray–floor-plane intersection records the click offset so the object doesn't jump. On mousemove, only the floor-plane intersection runs (O(1) math) — `mesh.position.x/z` is updated directly. No rebuild during drag; the `rAF` loop renders immediately. `rebuild()` fires on mouseup via the document-level handler in `app.js` (same path as 2D drag).
+**Why:** `mesh.position` is directly writable because all item meshes use a wrapper `THREE.Group` at world position, not baked vertices. Allocating `new Raycaster()` etc. on every `mousemove` would generate GC pressure — the three hot objects (`_drag3dRaycaster`, `_drag3dFloorPlane`, `_drag3dHitVec`, `_drag3dMouseNDC`) are cached as module-level constants. `initDrag3D()` is called before `initOrbit()` so the drag mousedown fires first and sets `state.drag`; the orbit mousedown then sees `state.drag` and skips — no separate `stopPropagation` or flag needed.
+**Pattern:**
+- `_itemMeshMap` (`[{id, item, mesh}]`) is rebuilt in `_doRebuild()` alongside `_skiltMeshMap`. Populated in `buildContainer` (GLB wrapper + procedural) and `buildCage3D` (returns the group).
+- `state.drag3dOffset: {x, z}` stores the object-centre-minus-floor-hit offset at dragstart.
+- `state._drag3dMesh` caches the mesh reference during drag to avoid a map lookup on every mousemove.
+- Wall snapping (`snapToWall`) is reused unchanged — same global function as 2D drag.
+- Post-drop logic (container auto-rotate, linked sign update) runs through the existing `document mouseup` in `app.js` — no duplication needed.
+
+---
+
+### GLB axis auto-detection replaces glbSwapWD — 2026-04
+**Problem:** Every new GLB model required manual trial-and-error to determine whether the model's X-axis mapped to Width or Depth (Three.js convention: X = room width, Z = room depth). Mismatch caused models to render squished/stretched on the wrong axis. The per-model `glbSwapWD: true` flag was the only fix but needed to be discovered experimentally.
+**Decision:** `loadGLB` now auto-detects the correct X/Z → W/D assignment by scoring both candidate mappings against the declared target dimensions. Score = sum of `|naturalSize/target - 1|` per axis; the lower score wins. If the swapped mapping is picked, a console warning is logged with the GLB URL and measured sizes for developer verification.
+**Why:** The scoring approach works reliably whenever W ≠ D (even moderately different values). Callers no longer pre-swap W/D — they always pass the true `def.W` and `def.D`. `glbSwapWD` on existing DEFS entries is now inert (kept as documentation).
+**Pattern:** To add a new GLB model: (1) add the DEFS entry with correct W/D/H in mm, (2) add the filename to `GLB_MODELS` in both `preloadItemGLBs` and `buildContainer`. No axis flags needed. If the console logs an auto-swap for the new model, that is correct and expected — it confirms the detection worked.
+
+---
+
 ## Live URL
 https://roomtegner.onrender.com
 

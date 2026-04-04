@@ -41,6 +41,9 @@ app.add_middleware(SecurityHeadersMiddleware)
 templates = Jinja2Templates(directory=str(STATIC_DIR))
 
 def require_api_key(request: Request):
+    # Ingen SELLER_PIN = utviklingsmodus (lokalt) — ingen auth-sjekk
+    if not SELLER_PIN:
+        return
     key = request.headers.get("X-API-Key", "")
     if not API_KEY or key != API_KEY:
         raise HTTPException(status_code=401, detail="Unauthorized")

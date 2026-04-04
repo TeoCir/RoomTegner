@@ -50,17 +50,41 @@ function initApp(urlCode) {
 
   // If the URL contains ?code=XXXXXX, apply read-only mode IMMEDIATELY before
   // any async work so the edit UI never flashes visible while data is loading.
+  //
+  // The loading overlay is shared with the GLB preloader below. For share-link
+  // visitors we must keep the overlay up until BOTH the sketch fetch AND the
+  // GLB preload are complete — otherwise the reader sees a blank canvas for ~2s
+  // between GLBs finishing and the sketch arriving. _overlayReady tracks both
+  // conditions; _tryHideOverlay() is called from each side when it finishes.
+  const _overlayReady = { glbs: false, sketch: !urlCode };
+  function _tryHideOverlay() {
+    if (!_overlayReady.glbs || !_overlayReady.sketch) return;
+    const ov = document.getElementById('loading-overlay');
+    if (!ov) return;
+    ov.classList.add('fade-out');
+    ov.addEventListener('transitionend', () => ov.remove(), { once: true });
+  }
+
   if (urlCode) {
     state.readOnly = true;
     applyReadOnly();
+    const labelEl = document.getElementById('loading-label');
+    if (labelEl) labelEl.textContent = 'Laster skisse…';
     api.getPublic(urlCode).then(sketch => {
-      if (!sketch) { toast('Ugyldig kode'); return; }
+      if (!sketch) {
+        toast('Ugyldig kode');
+        _overlayReady.sketch = true;
+        _tryHideOverlay();
+        return;
+      }
       state.sketchName = sketch.name;
       state.customer   = sketch.customer || '';
       fromSketchJSON(sketch.data);
       calcPPM(); updateDP(); render();
       renderRoomTabs();
       toast('Leser: ' + sketch.name);
+      _overlayReady.sketch = true;
+      _tryHideOverlay();
     });
   } else {
     loadSavedList();
@@ -91,8 +115,7 @@ function initApp(urlCode) {
   requestAnimationFrame(() => { resizeAll(); setRoomMode(state.roomMode); render(); });
 
   // Preload all GLB models in the background so 3D view is instant when the user first opens it.
-  // The overlay is shown during this load and fades out when done.
-  const overlay   = document.getElementById('loading-overlay');
+  // The overlay is hidden via _tryHideOverlay() once both GLBs and sketch data are ready.
   const bar       = document.getElementById('loading-bar');
   const countEl   = document.getElementById('loading-count');
   // Arrow-key input field: Enter commits, Escape cancels, stopPropagation keeps onKey() out
@@ -119,10 +142,11 @@ function initApp(urlCode) {
       // to produce a valid context in time for captureTopDown().
       if (!scene3d._initialized) scene3d.init();
 
-      if (!overlay) return;
-      overlay.classList.add('fade-out');
-      // Remove from DOM after fade so it has zero impact on layout/events
-      overlay.addEventListener('transitionend', () => overlay.remove(), { once: true });
+      // For share-link visitors, the overlay stays up until the sketch fetch also
+      // completes (_overlayReady.sketch). For normal users, sketch is pre-marked
+      // ready so _tryHideOverlay() fires immediately here.
+      _overlayReady.glbs = true;
+      _tryHideOverlay();
     }
   );
 }
@@ -1204,15 +1228,16 @@ function setView(v, btn) {
   document.getElementById('bgGrid').style.display = v === '2d' ? 'block' : 'none';
   document.getElementById('tb2d').style.display = v === '2d' ? 'flex' : 'none';
   const compass = document.getElementById('cam-compass');
-  if (compass) compass.style.display = v === '3d' ? 'block' : 'none';
+  if (compass) compass.style.display = (v === '3d' && !state.readOnly) ? 'block' : 'none';
   const walkWrap = document.getElementById('walk-btn-wrap');
-  if (walkWrap) walkWrap.style.display = v === '3d' ? 'block' : 'none';
+  if (walkWrap) walkWrap.style.display = (v === '3d' && !state.readOnly) ? 'block' : 'none';
   if (v === '3d') {
     if (!scene3d._initialized) scene3d.init();
     // Always resize — canvas was hidden during eager init so renderer may be
     // sized to the 1200×800 fallback. Resize now that the canvas is visible.
     scene3d.resize();
     scene3d.rebuild();
+    if (state.readOnly) scene3d.enterWalkMode(); // lesevisning: kun walk mode
   }
   updateSkilt3dCtrl();
   render();

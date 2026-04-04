@@ -100,6 +100,7 @@ const scene3d = (() => {
     let didDrag = false;
     el.addEventListener('mousedown', e => {
       if (walk.active) return; // walk mode owns the canvas — don't activate orbit drag
+      if (state.readOnly) return; // lesevisning: orbit-drag er deaktivert
       if (state.drag) return;  // 3D object drag owns this mousedown — initDrag3D fires first and sets state.drag
       if (e.button === 0) {
         orbit.active = true; orbit.lastX = e.clientX; orbit.lastY = e.clientY;
@@ -122,6 +123,7 @@ const scene3d = (() => {
     });
     el.addEventListener('wheel', e => {
       e.preventDefault();
+      if (state.readOnly) return; // lesevisning: scroll-zoom er deaktivert
       orbit.radius = Math.max(2, Math.min(40, orbit.radius + e.deltaY * 0.01));
       updateOrbitCamera();
     }, { passive: false });
@@ -412,6 +414,8 @@ const scene3d = (() => {
     if (_walkHintTimer) { clearTimeout(_walkHintTimer); _walkHintTimer = null; }
     const _hintEl = document.getElementById('r3d-walk-hint');
     if (_hintEl) { _hintEl.classList.remove('visible'); _hintEl.style.display = 'none'; }
+    // Lesevisning: Esc → tilbake til 2D (ingen orbit-modus tilgjengelig)
+    if (state.readOnly) { if (typeof setView === 'function') setView('2d'); return; }
     rebuild(); // removes ceiling + ceiling lights now that walk mode is off
     // Restore orbit camera (orbit state was never touched by walk mode)
     if (camera) updateOrbitCamera();
